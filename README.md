@@ -1,112 +1,83 @@
-<div align="center">
-  <h1>🐯 MeowMal Multi-Checker 🐯</h1>
-  <p>
-    <b>Advanced Microsoft & Minecraft Account Checker</b>
-  </p>
-  <p>
-    <a href="https://t.me/meowleak">
-      <img src="https://img.shields.io/badge/Telegram-Join%20Channel-blue?style=for-the-badge&logo=telegram" alt="Telegram">
-    </a>
-  </p>
-  <p>
-    <img src="https://img.shields.io/badge/Python-3.8+-yellow?style=flat-square&logo=python" alt="Python">
-    <img src="https://img.shields.io/github/license/meowmal/checker?style=flat-square" alt="License">
-  </p>
-</div>
+# 🎥 Crunchyroll Account Checker
 
----
+![Python](https://img.shields.io/badge/python-3670A0?style=for-the-badge&logo=python&logoColor=ffdd54)
+![Windows](https://img.shields.io/badge/Windows-0078D6?style=for-the-badge&logo=windows&logoColor=white)
+![Linux](https://img.shields.io/badge/Linux-FCC624?style=for-the-badge&logo=linux&logoColor=black)
 
-## ⚡ Features
 
-MeowMal Checker is a powerful, multi-threaded tool designed to validate and capture details from Microsoft and Minecraft accounts.
+A high-performance, multi-threaded Crunchyroll account checker with proxy support (HTTP/Socks4/Socks5), detailed capture (Plan, Renewal, Payment, Country), and both Windows & Linux support.
 
-### 🎮 **Minecraft Checking**
-- **Hypixel Stats**: Rank, Level, Bedwars Stars, Skyblock Coins, First/Last Login.
-- **Cosmetics**: Checks for Optifine Capes and Minecraft Capes (Migration, Minecon, etc.).
-- **Bans**: Checks Hypixel ban status and duration.
-- **NFA/SFA/FA**: Distinguishes between Non-Full Access, Semi-Full Access, and Full Access.
-- **Donut SMP**: Checks access to Donut SMP.
+## ✨ Features
 
-### 💻 **Microsoft / Xbox Checking**
-- **GamePass**: Detects active GamePass Ultimate/PC subscriptions.
-- **Payment Methods**: Lists linked credit cards (masked) and billing details.
-- **Balance**: Checks Microsoft account balance.
-- **Rewards**: Checks Bing/Microsoft Rewards points.
+- 🚀 **Multi-threaded**: Fast checking with configurable thread count.
+- 🛡️ **Proxy Support**: Supports HTTP, Socks4, and Socks5 proxies.
+- 🌍 **Country Detection**: accurately fetches the subscription country.
+- 📝 **Detailed Capture**:
+  - Plan (Fan, Mega Fan, Ultimate Fan)
+  - Auto-Renew Status
+  - Free Trial Status
+  - Payment Method
+  - Expiry Date
+- 🐧 **Cross-Platform**: dedicated scripts for Windows (`main.py`) and Linux (`Main_Linux.py`).
+- 📊 **Hit Counter**: Live and summary hit statistics.
 
-### ⚙️ **Core Features**
-- **Multi-threaded**: Blazing fast checking with configurable thread count.
-- **Proxy Support**: Supports HTTP, SOCKS4, and SOCKS5 proxies (User:Pass or IP:Port and more).
-- **Discord Webhook**: Sends beautiful, customizable embeds for hits directly to your Discord server.
-- **Retry Logic**: Robust handling of network errors and ratelimits with auto-retry.
-- **Configurable**: extensive `config.ini` to tweak every aspect of the checker.
-
----
-
-## 🚀 Installation
+## 🛠️ Installation
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/Ver3xl/MeowMal-Checker.git
-   cd MeowMal-Checker
+   git clone https://github.com/Ver3xl/Crunchyroll-Checker.git
+   cd crunchyroll-checker
    ```
 
 2. **Install dependencies:**
-   Make sure you have Python installed. Then run:
    ```bash
-   pip install -r requirements.txt
+   pip install requests
+   pip install pysocks # Required for Socks4/5 support
    ```
 
----
+## ⚙️ Configuration
 
-## 🛠️ Usage
+Edit `config.ini` to set your preferences:
 
-1. **Add Combos:**
-   Place your `email:password` combos in a text file (e.g., `combo.txt`).
+```ini
+[Settings]
+threads = 100            # Number of threads to use
+proxy_type = http        # Default proxy type: http, socks4, or socks5
+```
 
-2. **Add Proxies:**
-   - Create a `proxies.txt` file in the root directory.
-   - Add your proxies (one per line).
-   - Supported formats: `ip:port` or `user:pass@ip:port` or `ip:port:user:pass`.
+- **threads**: Higher values are faster but require better proxies and CPU.
+- **proxy_type**: The protocol to use if your proxies in `proxy.txt` are just `ip:port` or `ip:port:user:pass`.
+    - If your proxies already have `socks5://` prefix, the script will detect it automatically.
 
-3. **Configure:**
-   Edit `config.ini` to set up your preferences (threads, webhook, timeout, etc.).
+## 🚀 Usage
 
-4. **Run:**
+1. **Add Accounts**: Place your combos in `accounts.txt` (Format: `email:password`).
+2. **Add Proxies**: Place your proxies in `proxy.txt`.
+3. **Run the script**:
+
+   **Windows:**
    ```bash
-   python meow.py
+   python main.py
    ```
 
----
+   **Linux:**
+   ```bash
+   python3 Main_Linux.py
+   ```
 
-## ⚙️ Configuration (`config.ini`)
+## 📂 Output
 
-| Setting | Description |
-| :--- | :--- |
-| `threads` | Number of concurrent threads (Higher = Faster, requires good CPU/Proxies). |
-| `discord_webhook_url` | Your Discord Webhook URL for hit notifications. |
-| `use_proxies` | Set to `True` to enable proxy usage. |
-| `check_hypixel_rank` | Enable/Disable Hypixel rank checking. |
-| `check_gamepass` | Enable/Disable Xbox GamePass checking. |
+Hits are saved to `capture.txt` in the following pipe-separated format:
+```text
+email:pass | Country = US | Plan = Mega Fan Plan | Auto-Renew = true | Free-Trial = false | Payment-Methode = itunes | Expiry-Date = 2026-07-31 |
+```
 
-*(See standard `config.ini` for full list of options)*
-
----
-
-## 📊 Output
-
-Results are saved in the `results/` folder, organized by date and time:
-- `Hits.txt`: Valid accounts.
-- `Capture.txt`: Detailed capture information (Ranks, Coins, Bans, etc.).
-- `Banned.txt`: Accounts banned on Hypixel.
-
----
+Valid logins are also saved to `hits.txt` (only `email:pass`).
 
 ## ⚠️ Disclaimer
 
-This tool is for **educational purposes only**. The developer is not responsible for any misuse of this software. Please use it only on accounts you own or have explicit permission to test.
+This tool is for **educational purposes only**. The developer is not responsible for any misuse. Do not use this tool on accounts you do not own.
 
 ---
 
-<div align="center">
-  <p>Made with ❤️ by <b>MeowMal Dev's</b></p>
-</div>
+Made with ❤️ by MeowMal Dev's
