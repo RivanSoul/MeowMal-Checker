@@ -1,0 +1,8 @@
+requests
+readchar
+PySocks
+urllib3
+colorama
+git+https://github.com/ammaraskar/pyCraft.git
+
+
