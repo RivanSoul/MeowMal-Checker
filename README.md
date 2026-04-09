@@ -19,7 +19,7 @@
 
 ---
 
-> **MeowMal now includes a rate limit bypass (Anti Rate Limit) with both proxy and non-proxy support.** It’s not fully confirmed yet, but during testing it’s working with minimal issues. Speed is slightly slower for now optimization is in progress along with new features.
+> **MeowMal now includes a rate limit bypass (Anti Rate Limit) with both proxy and non-proxy support.** It’s not fully confirmed yet, but during testing it’s working with minimal issues. Speed is slightly slower for now optimization is in progress along with new features.I’m a solo developer right now, so updates may be delayed, understand that.
 > 
 > Good combos are still required. 
 > **Note:** Bypass stability is not fully guaranteed yet. This feature is mainly added to help users who can’t afford paid checkers.
