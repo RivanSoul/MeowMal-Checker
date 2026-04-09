@@ -7,6 +7,9 @@
     <a href="https://t.me/meowleak">
       <img src="https://img.shields.io/badge/Telegram-Join%20Channel-blue?style=for-the-badge&logo=telegram" alt="Telegram">
     </a>
+    <a href="https://discord.gg/jkUS62ESAB">
+      <img src="https://img.shields.io/badge/Discord-Join%20Server-7289da?style=for-the-badge&logo=discord&logoColor=white" alt="Discord">
+    </a>
   </p>
   <p>
     <img src="https://img.shields.io/badge/Python-3.8+-yellow?style=flat-square&logo=python" alt="Python">
