@@ -1,11 +1,9 @@
-colorama==0.4.6
-console==0.9907
-readchar==4.0.5
+colorama>=0.4.6
+readchar>=4.0.5
 requests>=2.32.0
-urllib3==2.2.2
 requests[socks]
-PySocks==1.7.1
-stem==1.8.2
-configparser==6.0.0
-bs4
+urllib3>=2.2.2
+PySocks>=1.7.1
+configparser>=6.0.0
+beautifulsoup4
 git+https://github.com/ammaraskar/pyCraft.git
