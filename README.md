@@ -19,10 +19,16 @@
 
 ---
 
-> **MeowMal now includes a rate limit bypass (Anti Rate Limit) with both proxy and non-proxy support.** It’s not fully confirmed yet, but during testing it’s working with minimal issues. Speed is slightly slower for now optimization is in progress along with new features.I’m a solo developer right now, so updates may be delayed, understand that.
-> 
-> Good combos are still required. 
-> **Note:** Bypass stability is not fully guaranteed yet. This feature is mainly added to help users who can’t afford paid checkers.
+ **MeowMal now includes a highly optimized rate limit bypass with both proxy and proxyless support.** The checking loop has been fully rewritten to automatically sleep and bypass Microsoft's 429 API rate limits without dropping active hits.
+ 
+ **Latest Update v1.0 (Hotfixes):**
+ - Added unban check logic to properly function without a proxy connection.
+ - Fixed "Normal Minecraft" accounts falsely indexing as Valid Mails.
+ - Resolved infinite looping logic during Proxyless network blockages.
+ - CPM statistics are now dynamically tracking via elapsed processing time, heavily reducing UI lag.
+ - Dependencies have been fully mapped in `requirements.txt`.
+ 
+ Good combos are still required. This tool is mainly maintained to help users who can’t afford paid checkers.
 
 ## ⚡ Features
 
