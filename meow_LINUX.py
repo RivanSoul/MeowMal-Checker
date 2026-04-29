@@ -48,18 +48,13 @@ def get_optimized_timeout(config=None):
         return (3, 5)
     else:
         return config.get('timeout', 8) if config else 10
-if sys.platform == 'win32':
-    try:
-        os.system('chcp 65001 >nul 2>&1')
-        if hasattr(sys.stdout, 'reconfigure'):
-            sys.stdout.reconfigure(encoding='utf-8', errors='replace')
-            sys.stderr.reconfigure(encoding='utf-8', errors='replace')
-        else:
-            import codecs
-            sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, errors='replace')
-            sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, errors='replace')
-    except Exception:
-        pass
+# Linux/Termux: ensure stdout/stderr use UTF-8
+try:
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+except Exception:
+    pass
 class SimpleUtils:
     _title_cache = ''
     @staticmethod
