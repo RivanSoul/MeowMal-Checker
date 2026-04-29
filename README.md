@@ -28,6 +28,7 @@
 * Increased stability
 * Improved speed
 * No combo skipping
+* Fixed Linux issues
 
 **Test Result:**
 Tested the same combos on MeowMal and TziChecker, TziChecker skipped all hits, MeowMal checked properly with zero skips.
