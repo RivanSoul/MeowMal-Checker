@@ -13,6 +13,7 @@
   </p>
   <p>
     <img src="https://img.shields.io/badge/Python-3.8+-yellow?style=flat-square&logo=python" alt="Python">
+    <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20Termux-blue?style=flat-square" alt="Platform">
     <img src="https://img.shields.io/github/license/meowmal/checker?style=flat-square" alt="License">
   </p>
 </div>
@@ -60,10 +61,13 @@ MeowMal Checker is a powerful, multi-threaded tool designed to validate and capt
 - **Discord Webhook**: Sends beautiful, customizable embeds for hits directly to your Discord server.
 - **Retry Logic**: Robust handling of network errors and ratelimits with auto-retry.
 - **Configurable**: extensive `config.ini` to tweak every aspect of the checker.
+- **Cross-Platform**: Runs on Windows (`meow.py`) and Linux / Termux / Android (`meow_LINUX.py`).
 
 ---
 
 ## 🚀 Installation
+
+### 🪟 Windows
 
 1. **Clone the repository:**
    ```bash
@@ -72,10 +76,32 @@ MeowMal Checker is a powerful, multi-threaded tool designed to validate and capt
    ```
 
 2. **Install dependencies:**
-   Make sure you have Python installed. Then run:
    ```bash
    pip install -r requirements.txt
    ```
+
+---
+
+### 🐧 Linux / 📱 Termux (Android)
+
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/RivanSoul/MeowMal-Checker.git
+   cd MeowMal-Checker
+   ```
+
+2. **Install dependencies (Linux-safe — no `readchar`, no `pyCraft` build):**
+
+   > **If you get `externally-managed-environment` error**, create a virtual environment first:
+   > ```bash
+   > python3 -m venv .venv && source .venv/bin/activate
+   > ```
+
+   ```bash
+   pip install -r requirements_linux.txt
+   ```
+
+> ⚠️ **Termux users:** `pyCraft` (Hypixel ban checking) requires Rust to compile and will fail on Termux/Android. It is disabled by default in `requirements_linux.txt`. All other features work normally.
 
 ---
 
@@ -92,9 +118,14 @@ MeowMal Checker is a powerful, multi-threaded tool designed to validate and capt
 3. **Configure:**
    Edit `config.ini` to set up your preferences (threads, webhook, timeout, etc.).
 
-4. **Run:**
+4. **Run — Windows:**
    ```bash
    python meow.py
+   ```
+
+5. **Run — Linux / Termux:**
+   ```bash
+   python3 meow_LINUX.py
    ```
 
 ---
