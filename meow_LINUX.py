@@ -62,18 +62,11 @@ class SimpleUtils:
         if title == SimpleUtils._title_cache:
             return
         SimpleUtils._title_cache = title
-        if sys.platform == 'win32':
-            try:
-                import ctypes
-                ctypes.windll.kernel32.SetConsoleTitleW(title)
-            except Exception:
-                pass
-        else:
-            try:
-                sys.stdout.write(f'\x1b]0;{title}\x07')
-                sys.stdout.flush()
-            except Exception:
-                pass
+        try:
+            sys.stdout.write(f'\x1b]0;{title}\x07')
+            sys.stdout.flush()
+        except Exception:
+            pass
 utils = SimpleUtils()
 _FORMAT_THRESHOLDS = [(1000000000.0, 'B', 2), (1000000.0, 'M', 2), (1000.0, 'K', 1)]
 def format_number(num):
