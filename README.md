@@ -7,7 +7,7 @@
     <a href="https://t.me/meowleak">
       <img src="https://img.shields.io/badge/Telegram-Join%20Channel-blue?style=for-the-badge&logo=telegram" alt="Telegram">
     </a>
-    <a href="https://discord.gg/7RRv93nXCp">
+    <a href="https://discord.gg/jkUS62ESAB">
       <img src="https://img.shields.io/badge/Discord-Join%20Server-7289da?style=for-the-badge&logo=discord&logoColor=white" alt="Discord">
     </a>
   </p>
@@ -19,16 +19,23 @@
 
 ---
 
- **MeowMal now includes a highly optimized rate limit bypass with both proxy and proxyless support.** The checking loop has been fully rewritten to automatically sleep and bypass Microsoft's 429 API rate limits without dropping active hits.
- 
- **Latest Update v1.0 (Hotfixes):**
- - Added unban check logic to properly function without a proxy connection.
- - Fixed "Normal Minecraft" accounts falsely indexing as Valid Mails.
- - Resolved infinite looping logic during Proxyless network blockages.
- - CPM statistics are now dynamically tracking via elapsed processing time, heavily reducing UI lag.
- - Dependencies have been fully mapped in `requirements.txt`.
- 
- Good combos are still required. This tool is mainly maintained to help users who can’t afford paid checkers.
+**MEOWMAL v1.1 PATCH UPDATE**
+
+* Fixed combo skipping issue
+* Improved hit rate (fixed low hits)
+* Added promo puller
+* Increased stability
+* Improved speed
+* No combo skipping
+
+**Test Result:**
+Tested the same combos on MeowMal and TziChecker, TziChecker skipped all hits, MeowMal checked properly with zero skips.
+
+**Note:**
+This tool is mainly for users who can’t afford paid checkers.
+
+If you face any issues or bugs, report them in the MeowMal Discord server.
+I’m a solo developer, so fixes may take some time, but I’ll handle them as fast as possible.
 
 ## ⚡ Features
 
