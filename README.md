@@ -20,24 +20,18 @@
 
 ---
 
-**MEOWMAL v1.1 PATCH UPDATE**
+**MeowMal Patch Update — Version 1.2**
 
-* Fixed combo skipping issue
-* Improved hit rate (fixed low hits)
-* Added promo puller
-* Increased stability
-* Improved speed
-* No combo skipping
-* Fixed Linux issues
+• Fixed low hit rate *(depends on combo quality)*
+• No more skipping valid emails
+• Fixed “No Name Set” capture issue
+• Added auto-payment support for DonutSMP
+• Fixed InboxSearcher
+• Increased overall speed
+• Multiple bugs and issues resolved
 
-**Test Result:**
-Tested the same combos on MeowMal and TziChecker, TziChecker skipped all hits, MeowMal checked properly with zero skips.
-
-**Note:**
-This tool is mainly for users who can’t afford paid checkers.
-
-If you face any issues or bugs, report them in the MeowMal Discord server.
-I’m a solo developer, so fixes may take some time, but I’ll handle them as fast as possible.
+Need cheap cloud with better hit rates?
+Use **MeowPrivate Cloud** — low cost, 30+ hits possible.
 
 ## ⚡ Features
 
@@ -47,10 +41,12 @@ MeowMal Checker is a powerful, multi-threaded tool designed to validate and capt
 - **Hypixel Stats**: Rank, Level, Bedwars Stars, Skyblock Coins, First/Last Login.
 - **Cosmetics**: Checks for Optifine Capes and Minecraft Capes (Migration, Minecon, etc.).
 - **Bans**: Checks Hypixel ban status and duration.
-- **NFA/SFA/FA**: Distinguishes between Non-Full Access, Semi-Full Access, and Full Access.
-- **Donut SMP**: Checks access to Donut SMP.
+- **NFA/SFA/FA/MFA**: Distinguishes between Non-Full Access, Semi-Full Access, Full Access, and Mail Full Access.
+- **Donut SMP**: Checks access to Donut SMP with auto-payment verification support.
+- **Namechange Status**: Accurately reports if an account's name is changeable (or "NoMC" if no name is set).
 
 ### 💻 **Microsoft / Xbox Checking**
+- **Inbox Searcher**: Scans the Outlook/Hotmail inbox for custom keywords (e.g., Steam, Discord, Netflix).
 - **GamePass**: Detects active GamePass Ultimate/PC subscriptions.
 - **Payment Methods**: Lists linked credit cards (masked) and billing details.
 - **Balance**: Checks Microsoft account balance.
@@ -148,9 +144,15 @@ MeowMal Checker is a powerful, multi-threaded tool designed to validate and capt
 ## 📊 Output
 
 Results are saved in the `results/` folder, organized by date and time:
-- `Hits.txt`: Valid accounts.
-- `Capture.txt`: Detailed capture information (Ranks, Coins, Bans, etc.).
-- `Banned.txt`: Accounts banned on Hypixel.
+- `Hits.txt` / `Capture.txt`: Detailed capture information (Ranks, Coins, Bans, etc.).
+- `Valid_Mail.txt`: Valid Microsoft accounts that do not own Minecraft.
+- `MFA.txt` & `SFA.txt`: Accounts with successful IMAP email access (MFA) and those without (SFA).
+- `Namechangeable.txt`: Full captures of accounts that are eligible for a Minecraft name change.
+- `Unbanned.txt`: Full captures of accounts that are not banned on Hypixel.
+- `Banned.txt`: Full captures of accounts that are banned on Hypixel.
+- `Cards.txt`: Accounts that have a linked payment method (Visa, Mastercard, Amex, Discover).
+- `donut_stats.txt`: Detailed Donut SMP server statistics (Rank, Balance, Tokens, Tags, Keys, PVs).
+- `2fa.txt`: Accounts that are locked behind Two-Factor Authentication or require account recovery.
 
 ---
 
