@@ -4,7 +4,7 @@
     <b>Advanced Microsoft & Minecraft Account Checker</b>
   </p>
   <p>
-    <a href="https://t.me/meowleak">
+    <a href="https://t.me/meowleak1">
       <img src="https://img.shields.io/badge/Telegram-Join%20Channel-blue?style=for-the-badge&logo=telegram" alt="Telegram">
     </a>
     <a href="https://discord.gg/D3FG34BFjS">
