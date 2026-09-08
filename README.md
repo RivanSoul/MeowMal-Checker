@@ -4,10 +4,10 @@
     <b>Advanced Microsoft & Minecraft Account Checker</b>
   </p>
   <p>
-    <a href="https://t.me/meowleak1">
+    <a href="https://t.me/meowmalhq">
       <img src="https://img.shields.io/badge/Telegram-Join%20Channel-blue?style=for-the-badge&logo=telegram" alt="Telegram">
     </a>
-    <a href="https://discord.gg/D3FG34BFjS">
+    <a href="https://discord.gg/PyreWzuHUy">
       <img src="https://img.shields.io/badge/Discord-Join%20Server-7289da?style=for-the-badge&logo=discord&logoColor=white" alt="Discord">
     </a>
   </p>
@@ -20,15 +20,11 @@
 
 ---
 
-**MeowMal Patch Update — Version 1.2**
+**MeowMal Patch Update — Version 1.3**
 
-• Fixed low hit rate *(depends on combo quality)*
-• No more skipping valid emails
-• Fixed “No Name Set” capture issue
-• Added auto-payment support for DonutSMP
-• Fixed InboxSearcher
-• Increased overall speed
-• Multiple bugs and issues resolved
+- Improved overall speed
+- Fixed major bugs and issues
+- Added Country Sorter
 
 Need cheap cloud with better hit rates?
 Use **MeowPrivate Cloud** — low cost, 30+ hits possible.
